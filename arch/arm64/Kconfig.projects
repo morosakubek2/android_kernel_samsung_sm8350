@@ -28,6 +28,18 @@ config MACH_T2Q_CHN_OPENX
         help
           Support for Samsung T2Q CHN OPENX device.
 
+config SEC_B2Q_PROJECT
+        default n
+        bool "Samsung B2Q Project"
+        help
+          Support for Samsung B2Q Project
+
+config MACH_B2Q_EUR_OPENX
+        default n
+        bool "Samsung B2Q EUR OPENX"
+        help
+          Support for Samsung B2Q EUR OPENX device.
+
 config MACH_T2Q_CHN_HKX
         default n
         bool "Samsung T2Q CHN HKX"
