@@ -20,6 +20,9 @@ if [ "$DEVICE_MODEL" == "SM-G9910" ]; then
 elif [ "$DEVICE_MODEL" == "SM-G9960" ]; then
 	DEVICE_NAME="t2q"
 	DEFCONFIG=vendor/t2q_chn_hkx_defconfig
+elif [ "$DEVICE_MODEL" == "SM-711B" ]; then
+	DEVICE_NAME="b2q"
+	DEFCONFIG=vendor/b2q_chn_hkx_defconfig
 elif [ "$DEVICE_MODEL" == "SM-G9980" ]; then
 	DEVICE_NAME="p3q"
 	DEFCONFIG=vendor/p3q_chn_hkx_defconfig
