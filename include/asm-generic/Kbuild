@@ -6,3 +6,4 @@
 
 mandatory-y += simd.h
 mandatory-y += dma-contiguous.h
+mandatory-y += msi.h
