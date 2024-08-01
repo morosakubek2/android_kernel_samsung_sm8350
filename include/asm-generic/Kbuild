@@ -5,3 +5,4 @@
 # asm headers from the host architecutre.)
 
 mandatory-y += simd.h
+mandatory-y += dma-contiguous.h
