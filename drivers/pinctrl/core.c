@@ -204,6 +204,7 @@ static int pinctrl_register_one_pin(struct pinctrl_dev *pctldev,
 				    const struct pinctrl_pin_desc *pin)
 {
 	struct pin_desc *pindesc;
+	int error;
 
 	pindesc = pin_desc_get(pctldev, pin->number);
 	if (pindesc) {
@@ -225,18 +226,25 @@ static int pinctrl_register_one_pin(struct pinctrl_dev *pctldev,
 	} else {
 		pindesc->name = kasprintf(GFP_KERNEL, "PIN%u", pin->number);
 		if (!pindesc->name) {
-			kfree(pindesc);
-			return -ENOMEM;
+			error = -ENOMEM;
+			goto failed;
 		}
 		pindesc->dynamic_name = true;
 	}
 
 	pindesc->drv_data = pin->drv_data;
 
-	radix_tree_insert(&pctldev->pin_desc_tree, pin->number, pindesc);
+	error = radix_tree_insert(&pctldev->pin_desc_tree, pin->number, pindesc);
+	if (error)
+		goto failed;
+
 	pr_debug("registered pin %d (%s) on %s\n",
 		 pin->number, pindesc->name, pctldev->desc->name);
 	return 0;
+
+failed:
+	kfree(pindesc);
+	return error;
 }
 
 static int pinctrl_register_pins(struct pinctrl_dev *pctldev,
@@ -1083,8 +1091,8 @@ static struct pinctrl *create_pinctrl(struct device *dev,
 		 * an -EPROBE_DEFER later, as that is the worst case.
 		 */
 		if (ret == -EPROBE_DEFER) {
-			pinctrl_free(p, false);
 			mutex_unlock(&pinctrl_maps_mutex);
+			pinctrl_free(p, false);
 			return ERR_PTR(ret);
 		}
 	}
@@ -1598,27 +1606,6 @@ int pinctrl_pm_select_idle_state(struct device *dev)
 EXPORT_SYMBOL_GPL(pinctrl_pm_select_idle_state);
 #endif
 
-#if IS_ENABLED(CONFIG_SEC_PM)
-void sec_gpio_debug_print(void)
-{
-	struct pinctrl_dev *pctldev;
-	const struct pinconf_ops *confops;
-
-	mutex_lock(&pinctrldev_list_mutex);
-
-	list_for_each_entry(pctldev, &pinctrldev_list, node) {
-		confops = pctldev->desc->confops;
-		if (confops && confops->pin_config_sec_dbg_show) {
-			pr_info("%s\n", pctldev->desc->name);
-			confops->pin_config_sec_dbg_show(pctldev, NULL);
-		}
-	}
-
-	mutex_unlock(&pinctrldev_list_mutex);
-}
-EXPORT_SYMBOL(sec_gpio_debug_print);
-#endif
-
 #ifdef CONFIG_DEBUG_FS
 
 static int pinctrl_pins_show(struct seq_file *s, void *what)
@@ -1863,40 +1850,6 @@ static int pinctrl_show(struct seq_file *s, void *what)
 }
 DEFINE_SHOW_ATTRIBUTE(pinctrl);
 
-#if IS_ENABLED(CONFIG_SEC_PM)
-static int sec_gpio_debug_show(struct seq_file *s, void *what)
-{
-	struct pinctrl_dev *pctldev;
-	const struct pinconf_ops *confops;
-
-	mutex_lock(&pinctrldev_list_mutex);
-
-	list_for_each_entry(pctldev, &pinctrldev_list, node) {
-		confops = pctldev->desc->confops;
-		if (confops && confops->pin_config_sec_dbg_show) {
-			seq_printf(s, "%s\n", pctldev->desc->name);
-			confops->pin_config_sec_dbg_show(pctldev, s);
-		}
-	}
-
-	mutex_unlock(&pinctrldev_list_mutex);
-
-	return 0;
-}
-
-static int sec_gpio_debug_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, sec_gpio_debug_show, NULL);
-}
-
-static const struct file_operations sec_gpio_debug_ops = {
-	.open		= sec_gpio_debug_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-#endif /* CONFIG_SEC_PM */
-
 static struct dentry *debugfs_root;
 
 static void pinctrl_init_device_debugfs(struct pinctrl_dev *pctldev)
@@ -1958,10 +1911,6 @@ static void pinctrl_init_debugfs(void)
 			    debugfs_root, NULL, &pinctrl_maps_fops);
 	debugfs_create_file("pinctrl-handles", S_IFREG | S_IRUGO,
 			    debugfs_root, NULL, &pinctrl_fops);
-#if IS_ENABLED(CONFIG_SEC_PM)
-	debugfs_create_file("showall", S_IFREG | 0444,
-			    debugfs_root, NULL, &sec_gpio_debug_ops);
-#endif /* CONFIG_SEC_PM */	
 }
 
 #else /* CONFIG_DEBUG_FS */
@@ -2069,6 +2018,14 @@ out_err:
 	return ERR_PTR(ret);
 }
 
+static void pinctrl_uninit_controller(struct pinctrl_dev *pctldev, struct pinctrl_desc *pctldesc)
+{
+	pinctrl_free_pindescs(pctldev, pctldesc->pins,
+			      pctldesc->npins);
+	mutex_destroy(&pctldev->mutex);
+	kfree(pctldev);
+}
+
 static int pinctrl_claim_hogs(struct pinctrl_dev *pctldev)
 {
 	pctldev->p = create_pinctrl(pctldev->dev, pctldev);
@@ -2113,13 +2070,7 @@ int pinctrl_enable(struct pinctrl_dev *pctldev)
 
 	error = pinctrl_claim_hogs(pctldev);
 	if (error) {
-		dev_err(pctldev->dev, "could not claim hogs: %i\n",
-			error);
-		pinctrl_free_pindescs(pctldev, pctldev->desc->pins,
-				      pctldev->desc->npins);
-		mutex_destroy(&pctldev->mutex);
-		kfree(pctldev);
-
+		dev_err(pctldev->dev, "could not claim hogs: %i\n", error);
 		return error;
 	}
 
@@ -2155,8 +2106,10 @@ struct pinctrl_dev *pinctrl_register(struct pinctrl_desc *pctldesc,
 		return pctldev;
 
 	error = pinctrl_enable(pctldev);
-	if (error)
+	if (error) {
+		pinctrl_uninit_controller(pctldev, pctldesc);
 		return ERR_PTR(error);
+	}
 
 	return pctldev;
 

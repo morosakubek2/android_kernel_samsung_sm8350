@@ -55,7 +55,7 @@ static LIST_HEAD(regulator_supply_alias_list);
 static LIST_HEAD(regulator_coupler_list);
 static bool has_full_constraints;
 #ifdef CONFIG_DEBUG_FS
-static bool debug_suspend = true;
+static bool debug_suspend;
 #endif
 
 static struct dentry *debugfs_root;
@@ -1730,19 +1730,24 @@ static struct regulator *create_regulator(struct regulator_dev *rdev,
 		}
 	}
 
-	if (err != -EEXIST)
+	if (err != -EEXIST) {
 		regulator->debugfs = debugfs_create_dir(supply_name, rdev->debugfs);
-	if (IS_ERR(regulator->debugfs))
-		rdev_dbg(rdev, "Failed to create debugfs directory\n");
+		if (IS_ERR(regulator->debugfs)) {
+			rdev_dbg(rdev, "Failed to create debugfs directory\n");
+			regulator->debugfs = NULL;
+		}
+	}
 
-	debugfs_create_u32("uA_load", 0444, regulator->debugfs,
-			   &regulator->uA_load);
-	debugfs_create_u32("min_uV", 0444, regulator->debugfs,
-			   &regulator->voltage[PM_SUSPEND_ON].min_uV);
-	debugfs_create_u32("max_uV", 0444, regulator->debugfs,
-			   &regulator->voltage[PM_SUSPEND_ON].max_uV);
-	debugfs_create_file("constraint_flags", 0444, regulator->debugfs,
-			    regulator, &constraint_flags_fops);
+	if (regulator->debugfs) {
+		debugfs_create_u32("uA_load", 0444, regulator->debugfs,
+				   &regulator->uA_load);
+		debugfs_create_u32("min_uV", 0444, regulator->debugfs,
+				   &regulator->voltage[PM_SUSPEND_ON].min_uV);
+		debugfs_create_u32("max_uV", 0444, regulator->debugfs,
+				   &regulator->voltage[PM_SUSPEND_ON].max_uV);
+		debugfs_create_file("constraint_flags", 0444, regulator->debugfs,
+				    regulator, &constraint_flags_fops);
+	}
 
 	/*
 	 * Check now if the regulator is an always on regulator - if
@@ -2684,7 +2689,8 @@ static int _regulator_enable(struct regulator *regulator)
 		/* Fallthrough on positive return values - already enabled */
 	}
 
-	rdev->use_count++;
+	if (regulator->enable_count == 1)
+		rdev->use_count++;
 
 	return 0;
 
@@ -2762,37 +2768,40 @@ static int _regulator_disable(struct regulator *regulator)
 
 	lockdep_assert_held_once(&rdev->mutex.base);
 
-	if (WARN(rdev->use_count <= 0,
+	if (WARN(regulator->enable_count == 0,
 		 "unbalanced disables for %s\n", rdev_get_name(rdev)))
 		return -EIO;
 
-	/* are we the last user and permitted to disable ? */
-	if (rdev->use_count == 1 &&
-	    (rdev->constraints && !rdev->constraints->always_on)) {
+	if (regulator->enable_count == 1) {
+	/* disabling last enable_count from this regulator */
+		/* are we the last user and permitted to disable ? */
+		if (rdev->use_count == 1 &&
+		    (rdev->constraints && !rdev->constraints->always_on)) {
 
-		/* we are last user */
-		if (regulator_ops_is_valid(rdev, REGULATOR_CHANGE_STATUS)) {
-			ret = _notifier_call_chain(rdev,
-						   REGULATOR_EVENT_PRE_DISABLE,
-						   NULL);
-			if (ret & NOTIFY_STOP_MASK)
-				return -EINVAL;
+			/* we are last user */
+			if (regulator_ops_is_valid(rdev, REGULATOR_CHANGE_STATUS)) {
+				ret = _notifier_call_chain(rdev,
+							   REGULATOR_EVENT_PRE_DISABLE,
+							   NULL);
+				if (ret & NOTIFY_STOP_MASK)
+					return -EINVAL;
 
-			ret = _regulator_do_disable(rdev);
-			if (ret < 0) {
-				rdev_err(rdev, "failed to disable\n");
-				_notifier_call_chain(rdev,
-						REGULATOR_EVENT_ABORT_DISABLE,
+				ret = _regulator_do_disable(rdev);
+				if (ret < 0) {
+					rdev_err(rdev, "failed to disable\n");
+					_notifier_call_chain(rdev,
+							REGULATOR_EVENT_ABORT_DISABLE,
+							NULL);
+					return ret;
+				}
+				_notifier_call_chain(rdev, REGULATOR_EVENT_DISABLE,
 						NULL);
-				return ret;
 			}
-			_notifier_call_chain(rdev, REGULATOR_EVENT_DISABLE,
-					NULL);
-		}
 
-		rdev->use_count = 0;
-	} else if (rdev->use_count > 1) {
-		rdev->use_count--;
+			rdev->use_count = 0;
+		} else if (rdev->use_count > 1) {
+			rdev->use_count--;
+		}
 	}
 
 	if (ret == 0)
@@ -3091,6 +3100,7 @@ struct regmap *regulator_get_regmap(struct regulator *regulator)
 
 	return map ? map : ERR_PTR(-EOPNOTSUPP);
 }
+EXPORT_SYMBOL_GPL(regulator_get_regmap);
 
 /**
  * regulator_get_hardware_vsel_register - get the HW voltage selector register
@@ -3358,10 +3368,8 @@ static int _regulator_set_voltage_time(struct regulator_dev *rdev,
 		 (new_uV < old_uV))
 		return rdev->constraints->settling_time_down;
 
-	if (ramp_delay == 0) {
-		rdev_dbg(rdev, "ramp_delay not set\n");
+	if (ramp_delay == 0)
 		return 0;
-	}
 
 	return DIV_ROUND_UP(abs(new_uV - old_uV), ramp_delay);
 }
@@ -4220,28 +4228,6 @@ int regulator_get_voltage(struct regulator *regulator)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(regulator_get_voltage);
-
-#ifdef CONFIG_SEC_PM
-int regulator_set_short_detection(struct regulator *regulator,
-				  bool enable, int lv_uA)
-{
-	struct regulator_dev *rdev = regulator->rdev;
-	int ret;
-
-	regulator_lock(rdev);
-
-	if (!rdev->desc->ops->set_short_detection) {
-		ret = -EINVAL;
-		goto out;
-	}
-
-	ret = rdev->desc->ops->set_short_detection(rdev, enable, lv_uA);
-out:
-	regulator_unlock(rdev);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(regulator_set_short_detection);
-#endif /* CONFIG_SEC_PM */
 
 /**
  * regulator_set_current_limit - set regulator output current limit
@@ -6220,8 +6206,7 @@ static int regulator_summary_show(struct seq_file *s, void *data)
 DEFINE_SHOW_ATTRIBUTE(regulator_summary);
 #endif /* CONFIG_DEBUG_FS */
 
-#if IS_ENABLED(CONFIG_SEC_PM)
-static int enabled_reg_count;
+#ifdef CONFIG_REGULATOR_QTI_DEBUG
 static int _regulator_debug_print_enabled(struct device *dev, void *data)
 {
 	struct regulator_dev *rdev = dev_to_rdev(dev);
@@ -6239,18 +6224,21 @@ static int _regulator_debug_print_enabled(struct device *dev, void *data)
 		mode = rdev->desc->ops->get_mode(rdev);
 
 	if (uV != -EPERM && mode != -EPERM)
-		pr_info("  %s[%u] %d uV, mode=%d\n",
+		pr_info("%s[%u] %d uV, mode=%d\n",
 			rdev_get_name(rdev), rdev->use_count, uV, mode);
 	else if (uV != -EPERM)
-		pr_info("  %s[%u] %d uV\n",
+		pr_info("%s[%u] %d uV\n",
 			rdev_get_name(rdev), rdev->use_count, uV);
 	else if (mode != -EPERM)
-		pr_info("  %s[%u], mode=%d\n",
+		pr_info("%s[%u], mode=%d\n",
 			rdev_get_name(rdev), rdev->use_count, mode);
 	else
-		pr_info("  %s[%u]\n", rdev_get_name(rdev), rdev->use_count);
+		pr_info("%s[%u]\n", rdev_get_name(rdev), rdev->use_count);
 
-	enabled_reg_count++;
+	/* Print a header if there are consumers. */
+	if (rdev->open_count)
+		pr_info("  %-32s EN    Min_uV   Max_uV  load_uA\n",
+			"Device-Supply");
 
 	list_for_each_entry(reg, &rdev->consumer_list, list) {
 		if (reg->supply_name)
@@ -6258,12 +6246,11 @@ static int _regulator_debug_print_enabled(struct device *dev, void *data)
 		else
 			supply_name = "(null)-(null)";
 
-		if (reg->enable_count)
-			pr_info("    * %-32s %d   %8d %8d %8d\n", supply_name,
-				reg->enable_count,
-				reg->voltage[PM_SUSPEND_ON].min_uV,
-				reg->voltage[PM_SUSPEND_ON].max_uV,
-				reg->uA_load);
+		pr_info("  %-32s %d   %8d %8d %8d\n", supply_name,
+			reg->enable_count,
+			reg->voltage[PM_SUSPEND_ON].min_uV,
+			reg->voltage[PM_SUSPEND_ON].max_uV,
+			reg->uA_load);
 	}
 
 	return 0;
@@ -6277,19 +6264,15 @@ static int _regulator_debug_print_enabled(struct device *dev, void *data)
  */
 void regulator_debug_print_enabled(void)
 {
-#ifdef CONFIG_REGULATOR_QTI_DEBUG
 	if (likely(!debug_suspend))
 		return;
-#endif /* CONFIG_REGULATOR_QTI_DEBUG */
 
-	pr_info("%-32s      EN     Min_uV   Max_uV  load_uA\n","----- Enabled regulators:");
-	enabled_reg_count = 0;
+	pr_info("Enabled regulators:\n");
 	class_for_each_device(&regulator_class, NULL, NULL,
 			     _regulator_debug_print_enabled);
-	pr_info("----- Enabled regulator count: %d\n", enabled_reg_count);
 }
 EXPORT_SYMBOL(regulator_debug_print_enabled);
-#endif
+#endif /* CONFIG_REGULATOR_QTI_DEBUG */
 
 static int __init regulator_init(void)
 {

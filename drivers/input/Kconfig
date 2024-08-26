@@ -4,6 +4,7 @@
 #
 
 menu "Input device support"
+	depends on !UML
 
 config INPUT
 	tristate "Generic input layer (needed for keyboard, mouse, ...)" if EXPERT
@@ -199,6 +200,10 @@ source "drivers/input/touchscreen/Kconfig"
 source "drivers/input/misc/Kconfig"
 
 source "drivers/input/rmi4/Kconfig"
+
+#ifdef OPLUS_FEATURE_FINGERPRINT
+source "drivers/input/oplus_fp_drivers/Kconfig"
+#endif /* OPLUS_FEATURE_FINGERPRINT */
 
 endif
 

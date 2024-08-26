@@ -51,10 +51,6 @@
 #include "sd_ops.h"
 #include "sdio_ops.h"
 
-#if IS_ENABLED(CONFIG_SEC_ABC)
-#include <linux/sti/abc_common.h>
-#endif
-
 /* The max erase timeout, used when host->max_busy_timeout isn't specified */
 #define MMC_ERASE_TIMEOUT_MS	(60 * 1000) /* 60 s */
 #define SD_DISCARD_TIMEOUT_MS	(250)
@@ -3083,22 +3079,6 @@ static int mmc_rescan_try_freq(struct mmc_host *host, unsigned freq)
 	return -EIO;
 }
 
-#if IS_ENABLED(CONFIG_SEC_STORAGE_MMC) && IS_ENABLED(CONFIG_SEC_ABC)
-void _mmc_trigger_abc_event(struct mmc_host *host)
-{
-	if (host->ops->get_cd == NULL || host->ops->get_cd(host) == 0)
-		return;
-
-	host->card_removed_cnt++;
-	if ((host->card_removed_cnt % 5) == 0)
-		sec_abc_send_event("MODULE=storage@WARN=sd_removed_err");
-}
-#else
-void _mmc_trigger_abc_event(struct mmc_host *host)
-{
-}
-#endif
-
 int _mmc_detect_card_removed(struct mmc_host *host)
 {
 	int ret;
@@ -3123,9 +3103,6 @@ int _mmc_detect_card_removed(struct mmc_host *host)
 	if (ret) {
 		mmc_card_set_removed(host->card);
 		pr_debug("%s: card remove detected\n", mmc_hostname(host));
-		ST_LOG("<%s> %s: card/tray remove detected\n",
-				__func__, mmc_hostname(host));
-		_mmc_trigger_abc_event(host);
 	}
 
 	return ret;
@@ -3243,7 +3220,7 @@ void mmc_rescan(struct work_struct *work)
 
  out:
 	if (host->caps & MMC_CAP_NEEDS_POLL)
-		mmc_schedule_delayed_work(&host->detect, HZ);
+		mmc_schedule_delayed_work(&host->detect, msecs_to_jiffies(1000));
 }
 
 void mmc_start_host(struct mmc_host *host)

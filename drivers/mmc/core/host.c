@@ -112,18 +112,17 @@ void mmc_retune_enable(struct mmc_host *host)
 	host->can_retune = 1;
 	if (host->retune_period)
 		mod_timer(&host->retune_timer,
-			  jiffies + host->retune_period * HZ);
+			  jiffies + host->retune_period * msecs_to_jiffies(1000));
 }
 
 /*
  * Pause re-tuning for a small set of operations.  The pause begins after the
- * next command and after first doing re-tuning.
+ * next command.
  */
 void mmc_retune_pause(struct mmc_host *host)
 {
 	if (!host->retune_paused) {
 		host->retune_paused = 1;
-		mmc_retune_needed(host);
 		mmc_retune_hold(host);
 	}
 }

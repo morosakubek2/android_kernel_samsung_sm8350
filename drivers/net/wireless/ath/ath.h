@@ -197,12 +197,13 @@ struct sk_buff *ath_rxbuf_alloc(struct ath_common *common,
 bool ath_is_mybeacon(struct ath_common *common, struct ieee80211_hdr *hdr);
 
 void ath_hw_setbssidmask(struct ath_common *common);
-void ath_key_delete(struct ath_common *common, struct ieee80211_key_conf *key);
+void ath_key_delete(struct ath_common *common, u8 hw_key_idx);
 int ath_key_config(struct ath_common *common,
 			  struct ieee80211_vif *vif,
 			  struct ieee80211_sta *sta,
 			  struct ieee80211_key_conf *key);
 bool ath_hw_keyreset(struct ath_common *common, u16 entry);
+bool ath_hw_keysetmac(struct ath_common *common, u16 entry, const u8 *mac);
 void ath_hw_cycle_counters_update(struct ath_common *common);
 int32_t ath_hw_get_listen_time(struct ath_common *common);
 
@@ -307,7 +308,7 @@ void _ath_dbg(struct ath_common *common, enum ATH_DEBUG dbg_mask,
 #define ath_dbg(common, dbg_mask, fmt, ...)				\
 	_ath_dbg(common, ATH_DBG_##dbg_mask, fmt, ##__VA_ARGS__)
 
-#define ATH_DBG_WARN(foo, arg...) do {} while (0)
+#define ATH_DBG_WARN(foo, arg...) ((void)0)
 #define ATH_DBG_WARN_ON_ONCE(foo) ({				\
 	int __ret_warn_once = !!(foo);				\
 	unlikely(__ret_warn_once);				\

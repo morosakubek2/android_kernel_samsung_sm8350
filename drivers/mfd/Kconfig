@@ -1096,16 +1096,6 @@ config MFD_SEC_CORE
 	  on this driver so building this as a module might require proper
 	  initial ramdisk or might not boot up as well in certain scenarios.
 
-config MFD_S2MPB02
-	tristate "Samsung Semiconductor S2MPB02 PMIC Support"
-	depends on I2C=y
-	select MFD_CORE
-	help
-	  Say yes here to support for Samsung Semiconductor S2MPB02.
-	  This is a Power Management IC with Flash on chip.
-	  This driver provides common support for accessing the device;
-	  additional drivers
-
 config MFD_SI476X_CORE
 	tristate "Silicon Laboratories 4761/64/68 AM/FM radio."
 	depends on I2C
@@ -1321,6 +1311,7 @@ config MFD_DAVINCI_VOICECODEC
 
 config MFD_TI_AM335X_TSCADC
 	tristate "TI ADC / Touch Screen chip support"
+	depends on ARCH_OMAP2PLUS || ARCH_K3 || COMPILE_TEST
 	select MFD_CORE
 	select REGMAP
 	select REGMAP_MMIO

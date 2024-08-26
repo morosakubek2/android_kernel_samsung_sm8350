@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2002,2007-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/debugfs.h>
@@ -144,11 +145,8 @@ int adreno_drawctxt_wait(struct adreno_device *adreno_dev,
 	int ret;
 	long ret_temp;
 
-	if (kgsl_context_detached(context)) {
-		dev_err(device->dev,
-			"return -ENOENT at <%s: %d>", __FILE__, __LINE__);
+	if (kgsl_context_detached(context))
 		return -ENOENT;
-	}
 
 	if (kgsl_context_invalid(context))
 		return -EDEADLK;
@@ -171,11 +169,11 @@ int adreno_drawctxt_wait(struct adreno_device *adreno_dev,
 			_check_context_timestamp(device, context, timestamp),
 			msecs_to_jiffies(timeout));
 
-	if (ret_temp == 0) {
-		ret = -ETIMEDOUT;
-		goto done;
-	} else if (ret_temp < 0) {
-		ret = (int) ret_temp;
+	if (ret_temp <= 0) {
+		kgsl_cancel_event(device, &context->events, timestamp,
+			wait_callback, (void *)drawctxt);
+
+		ret = ret_temp ? (int)ret_temp : -ETIMEDOUT;
 		goto done;
 	}
 	ret = 0;
@@ -186,11 +184,8 @@ int adreno_drawctxt_wait(struct adreno_device *adreno_dev,
 
 
 	/* Return -EINVAL if the context was detached while we were waiting */
-	if (kgsl_context_detached(context)) {
-		dev_err(device->dev,
-			"ret = -ENOENT at <%s: %d>", __FILE__, __LINE__);
+	if (kgsl_context_detached(context))
 		ret = -ENOENT;
-	}
 
 done:
 	trace_adreno_drawctxt_wait_done(-1, context->id, timestamp, ret);
@@ -604,21 +599,13 @@ int adreno_drawctxt_switch(struct adreno_device *adreno_dev,
 	 * the pt switch commands get executed by the GPU, leading to
 	 * pagefaults.
 	 */
-	if (drawctxt != NULL && kgsl_context_detached(&drawctxt->base)) {
-		dev_err(device->dev,
-			"return -ENOENT at <%s: %d>", __FILE__, __LINE__);
+	if (drawctxt != NULL && kgsl_context_detached(&drawctxt->base))
 		return -ENOENT;
-	}
-
-	trace_adreno_drawctxt_switch(rb, drawctxt);
 
 	/* Get a refcount to the new instance */
 	if (drawctxt) {
-		if (!_kgsl_context_get(&drawctxt->base)) {
-			dev_err(device->dev,
-				"return -ENOENT at <%s: %d>", __FILE__, __LINE__);
+		if (!_kgsl_context_get(&drawctxt->base))
 			return -ENOENT;
-		}
 
 		new_pt = drawctxt->base.proc_priv->pagetable;
 	} else {
@@ -628,7 +615,7 @@ int adreno_drawctxt_switch(struct adreno_device *adreno_dev,
 
 	ret = adreno_iommu_set_pt_ctx(rb, new_pt, drawctxt);
 	if (ret)
-		return ret;
+		goto err;
 
 	if (rb->drawctxt_active) {
 		/* Wait for the timestamp to expire */
@@ -638,7 +625,12 @@ int adreno_drawctxt_switch(struct adreno_device *adreno_dev,
 			kgsl_context_put(&rb->drawctxt_active->base);
 		}
 	}
+	trace_adreno_drawctxt_switch(rb, drawctxt);
 
 	rb->drawctxt_active = drawctxt;
 	return 0;
+err:
+	if (drawctxt)
+		kgsl_context_put(&drawctxt->base);
+	return ret;
 }

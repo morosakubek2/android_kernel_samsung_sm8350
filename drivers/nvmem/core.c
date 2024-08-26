@@ -69,7 +69,7 @@ static ssize_t bin_attr_nvmem_cell_read(struct file *filp, struct kobject *kobj,
 				    char *buf, loff_t pos, size_t count)
 {
 	struct nvmem_cell *cell;
-	size_t len;
+	size_t len = 0;
 	u8 *data;
 
 	cell = attr->private;
@@ -161,6 +161,7 @@ static void nvmem_cell_add(struct nvmem_cell *cell)
 
 #ifdef CONFIG_QCOM_QFPROM_SYSFS
 	/* add attr for this cell */
+	sysfs_attr_init(&nvmem_cell_attr->attr);
 	nvmem_cell_attr->attr.name = cell->name;
 	nvmem_cell_attr->attr.mode = 0444;
 	nvmem_cell_attr->private = cell;

@@ -9,10 +9,6 @@
 #include "kgsl_mmu.h"
 #include "kgsl_sharedmem.h"
 
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-#include <linux/delay.h>
-#endif
-
 static void pagetable_remove_sysfs_objects(struct kgsl_pagetable *pagetable);
 
 static void _deferred_destroy(struct work_struct *ws)
@@ -193,23 +189,6 @@ err:
 	return ret;
 }
 
-#ifdef CONFIG_TRACE_GPU_MEM
-static void kgsl_mmu_trace_gpu_mem_pagetable(struct kgsl_pagetable *pagetable)
-{
-	if (pagetable->name == KGSL_MMU_GLOBAL_PT ||
-		pagetable->name == KGSL_MMU_GLOBAL_LPAC_PT ||
-		pagetable->name == KGSL_MMU_SECURE_PT)
-		return;
-
-	trace_gpu_mem_total(0, pagetable->name,
-			(u64)atomic_long_read(&pagetable->stats.mapped));
-}
-#else
-static void kgsl_mmu_trace_gpu_mem_pagetable(struct kgsl_pagetable *pagetable)
-{
-}
-#endif
-
 void
 kgsl_mmu_detach_pagetable(struct kgsl_pagetable *pagetable)
 {
@@ -379,10 +358,6 @@ kgsl_mmu_map(struct kgsl_pagetable *pagetable,
 				struct kgsl_memdesc *memdesc)
 {
 	int size;
-	struct kgsl_device *device = KGSL_MMU_DEVICE(pagetable->mmu);
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-	int retry_cnt;
-#endif
 
 	if (!memdesc->gpuaddr)
 		return -EINVAL;
@@ -397,34 +372,12 @@ kgsl_mmu_map(struct kgsl_pagetable *pagetable,
 		int ret;
 
 		ret = pagetable->pt_ops->mmu_map(pagetable, memdesc);
-
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-		if (ret != 0 && !in_interrupt()) {
-			for (retry_cnt = 0; retry_cnt < 62 ; retry_cnt++) {
-				/* To wait free page by memory reclaim*/
-				usleep_range(16000, 16000);
-
-				pr_err("kgsl_mmu_map failed : retry (%d) ret : %d\n", retry_cnt, ret);
-				
-				ret = pagetable->pt_ops->mmu_map(pagetable, memdesc);
-				if (ret == 0)
-					break;
-			}
-		}
-#endif
-
 		if (ret)
 			return ret;
 
 		atomic_inc(&pagetable->stats.entries);
 		KGSL_STATS_ADD(size, &pagetable->stats.mapped,
 				&pagetable->stats.max_mapped);
-		kgsl_mmu_trace_gpu_mem_pagetable(pagetable);
-
-		if (!kgsl_memdesc_is_global(memdesc)
-				&& !(memdesc->flags & KGSL_MEMFLAGS_USERMEM_ION)) {
-			kgsl_trace_gpu_mem_total(device, size);
-		}
 
 		memdesc->priv |= KGSL_MEMDESC_MAPPED;
 	}
@@ -491,7 +444,6 @@ kgsl_mmu_unmap(struct kgsl_pagetable *pagetable,
 		struct kgsl_memdesc *memdesc)
 {
 	int ret = 0;
-	struct kgsl_device *device = KGSL_MMU_DEVICE(pagetable->mmu);
 
 	if (memdesc->size == 0)
 		return -EINVAL;
@@ -511,13 +463,9 @@ kgsl_mmu_unmap(struct kgsl_pagetable *pagetable,
 
 		atomic_dec(&pagetable->stats.entries);
 		atomic_long_sub(size, &pagetable->stats.mapped);
-		kgsl_mmu_trace_gpu_mem_pagetable(pagetable);
 
-		if (!kgsl_memdesc_is_global(memdesc)) {
+		if (!kgsl_memdesc_is_global(memdesc))
 			memdesc->priv &= ~KGSL_MEMDESC_MAPPED;
-			if (!(memdesc->flags & KGSL_MEMFLAGS_USERMEM_ION))
-				kgsl_trace_gpu_mem_total(device, -(size));
-		}
 	}
 
 	return ret;
@@ -545,7 +493,6 @@ int kgsl_mmu_pagetable_get_context_bank(struct kgsl_pagetable *pagetable)
 	if (PT_OP_VALID(pagetable, get_context_bank))
 		return pagetable->pt_ops->get_context_bank(pagetable);
 
-	pr_err("return -ENOENT at <%s: %d>", __FILE__, __LINE__);
 	return -ENOENT;
 }
 

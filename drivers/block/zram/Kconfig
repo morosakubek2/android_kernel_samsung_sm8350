@@ -2,7 +2,8 @@
 config ZRAM
 	tristate "Compressed RAM block device support"
 	depends on BLOCK && SYSFS && ZSMALLOC && CRYPTO
-	select CRYPTO_LZO
+	select CRYPTO_LZ4
+	default n
 	help
 	  Creates virtual block devices called /dev/zramX (X = 0, 1, ...).
 	  Pages written to these disks are compressed and stored in memory
@@ -17,7 +18,6 @@ config ZRAM
 config ZRAM_WRITEBACK
        bool "Write back incompressible or idle page to backing device"
        depends on ZRAM
-       default y
        help
 	 With incompressible page, there is no memory saving to keep it
 	 in memory. Instead, write it out to backing device.
@@ -25,7 +25,7 @@ config ZRAM_WRITEBACK
 	 /sys/block/zramX/backing_dev.
 
 	 With /sys/block/zramX/{idle,writeback}, application could ask
-	 idle page's writeback to the backing device to save in memory.
+	 idle pages writeback to the backing device to save in memory.
 
 	 See Documentation/admin-guide/blockdev/zram.rst for more information.
 
@@ -39,14 +39,6 @@ config ZRAM_MEMORY_TRACKING
 
 	  See Documentation/admin-guide/blockdev/zram.rst for more information.
 
-config ZRAM_LRU_WRITEBACK
-	bool
-	depends on ZRAM_WRITEBACK
-	default y
-	help
-	  This feature supports zram lru-based writeback (SQZR).
-
-config ZRAM_LRU_WRITEBACK_LIMIT
-	int "Limit zram lru writeback"
-	default 5120
-	depends on ZRAM_LRU_WRITEBACK
+config ZRAM_DEFAULT_COMP_ALGORITHM
+	string "Default ZRAM compression algorithm"
+	default "lz4"

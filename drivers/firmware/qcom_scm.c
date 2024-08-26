@@ -204,10 +204,27 @@ void qcom_scm_set_download_mode(enum qcom_download_mode mode,
 
 	if (ret)
 		dev_err(dev, "failed to set download mode: %d\n", ret);
-	else
-		dev_err(dev, "set download mode: 0x%02x\n", mode);
 }
 EXPORT_SYMBOL(qcom_scm_set_download_mode);
+
+int qcom_scm_get_download_mode(unsigned int *mode, phys_addr_t tcsr_boot_misc)
+{
+	int ret = -EINVAL;
+	struct device *dev = __scm ? __scm->dev : NULL;
+
+	if (tcsr_boot_misc || (__scm && __scm->dload_mode_addr)) {
+		ret = qcom_scm_io_readl(tcsr_boot_misc ? : __scm->dload_mode_addr, mode);
+	} else {
+		dev_err(dev,
+			"No available mechanism for getting download mode\n");
+	}
+
+	if (ret)
+		dev_err(dev, "failed to get download mode: %d\n", ret);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(qcom_scm_get_download_mode);
 
 int qcom_scm_config_cpu_errata(void)
 {
@@ -1231,7 +1248,6 @@ static void qcom_scm_shutdown(struct platform_device *pdev)
 {
 	qcom_scm_disable_sdi();
 	qcom_scm_halt_spmi_pmic_arbiter();
-	/* Clean shutdown, disable download mode to allow normal restart */
 	qcom_scm_set_download_mode(QCOM_DOWNLOAD_NODUMP, 0);
 }
 
@@ -1263,6 +1279,7 @@ static struct platform_driver qcom_scm_driver = {
 	.driver = {
 		.name	= "qcom_scm",
 		.of_match_table = qcom_scm_dt_match,
+		.suppress_bind_attrs = true,
 	},
 	.probe = qcom_scm_probe,
 	.shutdown = qcom_scm_shutdown,
@@ -1278,7 +1295,7 @@ static int __init qcom_scm_init(void)
 
 	return qtee_shmbridge_driver_init();
 }
-subsys_initcall(qcom_scm_init);
+core_initcall(qcom_scm_init);
 
 #ifdef CONFIG_QCOM_RTIC
 static int __init scm_mem_protection_init(void)

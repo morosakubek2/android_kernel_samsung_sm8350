@@ -40,7 +40,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <stdarg.h>
+#include <linux/stdarg.h>
 #include <linux/input.h>
 #include <linux/interrupt.h>
 #include <linux/serio.h>
@@ -92,7 +92,7 @@ int elapsedNanosecond(struct StopWatch *w)
 	return result;
 }
 
-char *timestamp()
+char *timestamp(void)
 {
 	char *result = NULL;
 

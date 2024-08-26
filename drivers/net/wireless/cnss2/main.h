@@ -15,7 +15,7 @@
 #include <linux/pm_qos.h>
 #include <linux/platform_device.h>
 #include <net/cnss2.h>
-#if IS_ENABLED(CONFIG_QCOM_MEMORY_DUMP_V2)
+#if IS_ENABLED(CONFIG_QCOM_MEMORY_DUMP_V2) || IS_ENABLED(CONFIG_QCOM_MINIDUMP)
 #include <soc/qcom/memory_dump.h>
 #endif
 #if IS_ENABLED(CONFIG_MSM_SUBSYSTEM_RESTART) || \
@@ -99,9 +99,6 @@ struct cnss_pinctrl_info {
 	int bt_en_gpio;
 	int xo_clk_gpio; /*qca6490 only */
 	int sw_ctrl_gpio;
-#ifdef CONFIG_WLAN_MULTIPLE_SUPPORT_FEM
-	int fem_sel_gpio; // SS B2Q Hihg == NXP / Low == Qorvo
-#endif
 };
 
 #if IS_ENABLED(CONFIG_MSM_SUBSYSTEM_RESTART)
@@ -506,13 +503,28 @@ struct cnss_plat_data {
 	u32 hw_trc_override;
 	u32 is_converged_dt;
 	struct device_node *dev_node;
-    u64 feature_list;
-    bool adsp_pc_enabled;
-#ifdef CONFIG_SEC_SS_CNSS_FEATURE_SYSFS
-	struct kobject *wifi_kobj;
-	struct completion macloader_done;
-#endif /* CONFIG_SEC_SS_CNSS_FEATURE_SYSFS */
+	u64 feature_list;
+	bool adsp_pc_enabled;
+
+    #ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
+    //Add for wifi switch monitor
+	unsigned long loadBdfState;
+	unsigned long loadRegdbState;
+    #endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
 };
+
+#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
+//Add for wifi switch monitor
+enum cnss_load_state {
+	CNSS_LOAD_BDF_FAIL = 1,
+	CNSS_LOAD_BDF_SUCCESS,
+	CNSS_LOAD_REGDB_FAIL,
+	CNSS_LOAD_REGDB_SUCCESS,
+	CNSS_PROBE_FAIL,
+	CNSS_PROBE_SUCCESS,
+};
+
+#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
 
 #ifdef CONFIG_ARCH_QCOM
 static inline u64 cnss_get_host_timestamp(struct cnss_plat_data *plat_priv)
@@ -584,10 +596,7 @@ int cnss_request_firmware_direct(struct cnss_plat_data *plat_priv,
 void cnss_disable_redundant_vreg(struct cnss_plat_data *plat_priv);
 int cnss_gpio_get_value(struct cnss_plat_data *plat_priv, int gpio_num);
 int cnss_set_feature_list(struct cnss_plat_data *plat_priv,
-             enum cnss_feature_v01 feature);
+			  enum cnss_feature_v01 feature);
 int cnss_get_feature_list(struct cnss_plat_data *plat_priv,
-             u64 *feature_list);
-#ifdef CONFIG_WLAN_MULTIPLE_SUPPORT_FEM
-int cnss_get_fem_sel_gpio_status(struct cnss_plat_data *plat_priv);
-#endif
+			  u64 *feature_list);
 #endif /* _CNSS_MAIN_H */

@@ -73,6 +73,19 @@
 #include "ufs_quirks.h"
 #include "ufshci.h"
 
+#ifdef OPLUS_FEATURE_UFSPLUS
+#if defined(CONFIG_UFSFEATURE)
+#include "ufsfeature.h"
+#endif
+#if defined(CONFIG_SCSI_SKHPB)
+#include "ufshpb_skh.h"
+#endif
+#endif /* OPLUS_FEATURE_UFSPLUS */
+
+#ifdef CONFIG_OPLUS_FEATURE_PADL_STATISTICS
+#include "ufs_signal_quality.h"
+#endif
+
 #define UFSHCD "ufshcd"
 #define UFSHCD_DRIVER_VERSION "0.2"
 
@@ -263,13 +276,11 @@ struct ufs_query {
  * @type: device management command type - Query, NOP OUT
  * @lock: lock to allow one command at a time
  * @complete: internal commands completion
- * @tag_wq: wait queue until free command slot is available
  */
 struct ufs_dev_cmd {
 	enum dev_cmd_type type;
 	struct mutex lock;
 	struct completion *complete;
-	wait_queue_head_t tag_wq;
 	struct ufs_query query;
 };
 
@@ -512,15 +523,14 @@ struct ufs_clk_scaling {
 
 struct ufshcd_cmd_log_entry {
 	char *str;/* context like "send", "complete" */
-	char *cmd_type;/* "scsi", "query", "nop", "uic" */
+	char *cmd_type;/* "scsi", "query", "nop", "dme" */
 	u8 lun;
 	u8 cmd_id;
 	sector_t lba;
 	int transfer_len;
 	u8 idn;/* used only for query idn */
-	u32 intr;
 	u32 doorbell;
-	unsigned long outstanding_reqs;
+	u32 outstanding_reqs;
 	u32 seq_num;
 	unsigned int tag;
 	ktime_t tstamp;
@@ -698,7 +708,7 @@ struct ufs_hba_variant_params {
  * @host: Scsi_Host instance of the driver
  * @dev: device handle
  * @lrb: local reference block
- * @lrb_in_use: lrb in use
+ * @cmd_queue: Used to allocate command tags from hba->host->tag_set.
  * @outstanding_tasks: Bits representing outstanding task requests
  * @outstanding_reqs: Bits representing outstanding transfer requests
  * @capabilities: UFS Controller Capabilities
@@ -711,11 +721,9 @@ struct ufs_hba_variant_params {
  * @irq: Irq number of the controller
  * @active_uic_cmd: handle of active UIC command
  * @uic_cmd_mutex: mutex for uic command
- * @tm_wq: wait queue for task management
- * @tm_tag_wq: wait queue for free task management slots
- * @tm_slots_in_use: bit map of task management request slots in use
+ * @tmf_tag_set: TMF tag set.
+ * @tmf_queue: Used to allocate TMF tags.
  * @pwr_done: completion for power mode change
- * @tm_condition: condition variable for task management
  * @ufshcd_state: UFSHCD states
  * @eh_flags: Error handling flags
  * @intr_mask: Interrupt Mask Bits
@@ -762,6 +770,7 @@ struct ufs_hba {
 
 	struct Scsi_Host *host;
 	struct device *dev;
+	struct request_queue *cmd_queue;
 	/*
 	 * This field is to keep a reference to "scsi_device" corresponding to
 	 * "UFS device" W-LU.
@@ -782,7 +791,6 @@ struct ufs_hba {
 	u32 ahit;
 
 	struct ufshcd_lrb *lrb;
-	unsigned long lrb_in_use;
 
 	unsigned long outstanding_tasks;
 	unsigned long outstanding_reqs;
@@ -886,10 +894,8 @@ struct ufs_hba {
 	/* Device deviations from standard UFS device spec. */
 	unsigned int dev_quirks;
 
-	wait_queue_head_t tm_wq;
-	wait_queue_head_t tm_tag_wq;
-	unsigned long tm_condition;
-	unsigned long tm_slots_in_use;
+	struct blk_mq_tag_set tmf_tag_set;
+	struct request_queue *tmf_queue;
 
 	struct uic_command *active_uic_cmd;
 	struct mutex uic_cmd_mutex;
@@ -1016,12 +1022,26 @@ struct ufs_hba {
 
 	struct device		bsg_dev;
 	struct request_queue	*bsg_queue;
-#if defined(CONFIG_SCSI_UFSHCD_QTI)
-	ktime_t queue_err_ts;
-	int		queue_err_ret;
-	int		queue_err_cnt;
+#ifdef OPLUS_FEATURE_UFSPLUS
+#if defined(CONFIG_SCSI_SKHPB)
+	/* HPB support */
+	u32 skhpb_feat;
+	int skhpb_state;
+	int skhpb_max_regions;
+	struct delayed_work skhpb_init_work;
+	bool issue_ioctl;
+	struct skhpb_lu *skhpb_lup[UFS_UPIU_MAX_GENERAL_LUN];
+	struct work_struct skhpb_eh_work;
+	u32 skhpb_quirk;
+	u8 hpb_control_mode;
+#define SKHPB_U8_MAX 0xFF
+	u8 skhpb_quicklist_lu_enable[UFS_UPIU_MAX_GENERAL_LUN];
 #endif
 
+#if defined(CONFIG_SCSI_SKHPB)
+	struct scsi_device *sdev_ufs_lu[UFS_UPIU_MAX_GENERAL_LUN];
+#endif
+#endif
 #ifdef CONFIG_SCSI_UFS_CRYPTO
 	/* crypto */
 	union ufs_crypto_capabilities crypto_capabilities;
@@ -1030,9 +1050,8 @@ struct ufs_hba {
 	struct keyslot_manager *ksm;
 	void *crypto_DO_NOT_USE[8];
 #endif /* CONFIG_SCSI_UFS_CRYPTO */
-
-#ifdef CONFIG_SCSI_UFSHCD_QTI
-	struct ufshcd_cmd_log cmd_log;
+#ifdef CONFIG_OPLUS_FEATURE_PADL_STATISTICS
+	struct unipro_signal_quality_ctrl signalCtrl;
 #endif
 	bool wb_buf_flush_enabled;
 	bool wb_enabled;
@@ -1046,6 +1065,12 @@ struct ufs_hba {
 	bool restore;
 	bool abort_triggered_wlun;
 #endif
+
+#ifdef OPLUS_FEATURE_UFSPLUS
+#if defined(CONFIG_UFSFEATURE)
+	struct ufsf_feature ufsf;
+#endif
+#endif /* OPLUS_FEATURE_UFSPLUS */
 };
 
 /* Returns true if clocks can be gated. Otherwise false */
@@ -1132,7 +1157,11 @@ static inline bool ufshcd_is_auto_hibern8_enabled(struct ufs_hba *hba)
 
 static inline bool ufshcd_is_wb_allowed(struct ufs_hba *hba)
 {
+#if defined(OPLUS_FEATURE_UFSPLUS) && defined(CONFIG_UFSFEATURE) && defined(CONFIG_UFSTW)
+	return 0;
+#else
 	return hba->caps & UFSHCD_CAP_WB_EN;
+#endif
 }
 
 #define ufshcd_writel(hba, val, reg)	\
@@ -1306,6 +1335,15 @@ void ufshcd_fixup_dev_quirks(struct ufs_hba *hba, struct ufs_dev_fix *fixups);
 #define SD_ASCII_STD true
 #define SD_RAW false
 
+#ifdef OPLUS_FEATURE_UFSPLUS
+#if defined(CONFIG_UFSFEATURE)
+int ufshcd_exec_dev_cmd(struct ufs_hba *hba,
+			enum dev_cmd_type cmd_type, int timeout);
+void ufshcd_scsi_block_requests(struct ufs_hba *hba);
+void ufshcd_scsi_unblock_requests(struct ufs_hba *hba);
+int ufshcd_wait_for_doorbell_clr(struct ufs_hba *hba, u64 wait_timeout_us);
+#endif
+#endif /* OPLUS_FEATURE_UFSPLUS */
 int ufshcd_hold(struct ufs_hba *hba, bool async);
 void ufshcd_release(struct ufs_hba *hba);
 
@@ -1508,8 +1546,12 @@ static inline u8 ufshcd_scsi_to_upiu_lun(unsigned int scsi_lun)
 	else
 		return scsi_lun & UFS_UPIU_MAX_UNIT_NUM_ID;
 }
-
-
+#ifdef OPLUS_FEATURE_UFSPLUS
+#if defined(CONFIG_SCSI_SKHPB)
+int ufshcd_query_flag_retry(struct ufs_hba *hba,
+	enum query_opcode opcode, enum flag_idn idn, u8 index, bool *flag_res);
+#endif
+#endif
 int ufshcd_dump_regs(struct ufs_hba *hba, size_t offset, size_t len,
 		     const char *prefix);
 int ufshcd_uic_hibern8_enter(struct ufs_hba *hba);

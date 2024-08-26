@@ -11,7 +11,6 @@
 #include <linux/platform_device.h>
 #include <linux/of_device.h>
 #include <linux/sysfs.h>
-#include <linux/samsung/sec_debug.h>
 #include <soc/qcom/subsystem_restart.h>
 
 #define BOOT_CMD 1

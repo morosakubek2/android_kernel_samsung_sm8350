@@ -21,13 +21,13 @@ static int fetch_cdev(struct thermal_zone_device *tz, char *dev_token,
 		char *upper_lim_token, char *lower_lim_token, int trip)
 {
 	unsigned long upper_limit, lower_limit;
-	char cdev_name[THERMAL_NAME_LENGTH] = "";
-	char limit_str[THERMAL_NAME_LENGTH] = "";
+	char cdev_name[21] = "";
+	char limit_str[21] = "";
 	struct thermal_instance *instance;
 	bool match_found = false;
 
 	dev_token = strim(dev_token);
-	if (sscanf(dev_token, "%20[^ +\n\t]", cdev_name) != 1)
+	if (sscanf(dev_token, "%19[^ +\n\t]", cdev_name) != 1)
 		return -EINVAL;
 	list_for_each_entry(instance, &tz->thermal_instances, tz_node) {
 		if (!instance->cdev || instance->trip != trip)
@@ -41,14 +41,14 @@ static int fetch_cdev(struct thermal_zone_device *tz, char *dev_token,
 	if (!match_found)
 		return -ENODEV;
 	if (upper_lim_token) {
-		if (sscanf(upper_lim_token, "%20[^ +\n\t]", limit_str) != 1)
+		if (sscanf(upper_lim_token, "%19[^ +\n\t]", limit_str) != 1)
 			return -EINVAL;
 		if (kstrtoul(limit_str, 0, &upper_limit))
 			return -EINVAL;
 		instance->upper = upper_limit;
 	}
 	if (lower_lim_token) {
-		if (sscanf(lower_lim_token, "%20[^ +\n\t]", limit_str) != 1)
+		if (sscanf(lower_lim_token, "%19[^ +\n\t]", limit_str) != 1)
 			return -EINVAL;
 		if (kstrtoul(limit_str, 0, &lower_limit))
 			return -EINVAL;
@@ -329,7 +329,7 @@ static ssize_t thermal_dbgfs_config_write(struct file *file,
 		const char __user *user_buf, size_t count, loff_t *ppos)
 {
 	struct thermal_zone_device *tz = NULL;
-	char *sensor_buf = NULL, sensor_name[THERMAL_NAME_LENGTH] = "", *buf;
+	char *sensor_buf = NULL, sensor_name[21] = "", *buf;
 	int ret = -EINVAL;
 
 	buf = kzalloc(sizeof(char) * (count + 1), GFP_KERNEL);
@@ -341,7 +341,7 @@ static ssize_t thermal_dbgfs_config_write(struct file *file,
 	}
 	sensor_buf = strnstr(buf, "sensor", count);
 	if (sensor_buf) {
-		if (sscanf(sensor_buf, "sensor %20[^\n\t ]",
+		if (sscanf(sensor_buf, "sensor %19[^\n\t ]",
 				sensor_name) != 1) {
 			pr_err("sensor name not found\n");
 			ret = -EINVAL;

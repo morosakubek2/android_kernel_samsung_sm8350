@@ -36,8 +36,6 @@ static void adreno_get_submit_time(struct adreno_device *adreno_dev,
 {
 	const struct adreno_gpudev *gpudev = ADRENO_GPU_DEVICE(adreno_dev);
 	unsigned long flags;
-	struct adreno_context *drawctxt = rb->drawctxt_active;
-	struct kgsl_context *context = &drawctxt->base;
 
 	/*
 	 * Here we are attempting to create a mapping between the
@@ -414,11 +412,8 @@ adreno_ringbuffer_addcmds(struct adreno_ringbuffer *rb,
 	static unsigned int _seq_cnt;
 
 	if (drawctxt != NULL && kgsl_context_detached(&drawctxt->base) &&
-		!is_internal_cmds(flags)) {
-		dev_err(device->dev,
-			"return -ENOENT at <%s: %d>", __FILE__, __LINE__);
+		!is_internal_cmds(flags))
 		return -ENOENT;
-	}
 
 	/* On fault return error so that we don't keep submitting */
 	if (adreno_gpu_fault(adreno_dev) != 0)
@@ -1101,10 +1096,6 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 			dev_err(device->dev,
 				     "Unable to switch draw context: %d\n",
 				     ret);
-		else if (ret == -ENOENT) {
-			dev_err(device->dev,
-				"ret == -ENOENT at <%s: %d>", __FILE__, __LINE__);
-		}
 		goto done;
 	}
 

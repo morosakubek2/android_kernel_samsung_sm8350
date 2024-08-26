@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2010-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #ifndef __KGSL_PWRCTRL_H
 #define __KGSL_PWRCTRL_H
@@ -25,7 +26,6 @@
 #define KGSL_PWRFLAGS_CLK_ON   1
 #define KGSL_PWRFLAGS_AXI_ON   2
 #define KGSL_PWRFLAGS_IRQ_ON   3
-#define KGSL_PWRFLAGS_NAP_OFF  5
 
 /* Only two supported levels, min & max */
 #define KGSL_CONSTRAINT_PWR_MAXLEVELS 2
@@ -169,10 +169,6 @@ struct kgsl_pwrctrl {
 	struct icc_path *icc_path;
 	/** cur_ab: The last ab voted by the driver */
 	u32 cur_ab;
-	/** @minbw_timer - Timer struct for entering minimum bandwidth state */
-	struct timer_list minbw_timer;
-	/** @minbw_timeout - Timeout for entering minimum bandwidth state */
-	u32 minbw_timeout;
 	/** @ddr_qos_devfreq: Devfreq device for setting DDR qos policy */
 	struct devfreq *ddr_qos_devfreq;
 	/** @time_in_pwrlevel: Each pwrlevel active duration in usec */
@@ -231,6 +227,13 @@ int kgsl_pwrctrl_set_default_gpu_pwrlevel(struct kgsl_device *device);
  * @state: Power state requested
  */
 void kgsl_pwrctrl_request_state(struct kgsl_device *device, u32 state);
+
+/**
+ * kgsl_pwrctrl_set_state - Set a specific power state
+ * @device: Pointer to the kgsl device
+ * @state: Power state requested
+ */
+void kgsl_pwrctrl_set_state(struct kgsl_device *device, u32 state);
 
 /**
  * kgsl_pwrctrl_axi - Propagate bus votes during slumber entry and exit

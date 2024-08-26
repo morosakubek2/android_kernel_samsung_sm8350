@@ -28,7 +28,7 @@ enum cnss_dev_bus_type cnss_get_bus_type(struct cnss_plat_data *plat_priv)
 	if (plat_priv->is_converged_dt) {
 		dev = &plat_priv->plat_dev->dev;
 		ret = of_property_read_u32(dev->of_node, "qcom,bus-type",
-					   &bus_type);
+					   (u32*)&bus_type);
 		if (!ret && bus_type <= CNSS_BUS_USB)
 			cnss_pr_dbg("Got bus type[%u] from dt\n", bus_type);
 		else
@@ -619,5 +619,22 @@ bool cnss_bus_is_smmu_s1_enabled(struct cnss_plat_data *plat_priv)
 		cnss_pr_err("Unsupported bus type: %d\n",
 			    plat_priv->bus_type);
 		return false;
+	}
+}
+
+int cnss_bus_dsp_link_control(struct cnss_plat_data *plat_priv,
+			      bool link_enable)
+{
+	if (!plat_priv)
+		return -ENODEV;
+
+	switch (plat_priv->bus_type) {
+	case CNSS_BUS_PCI:
+		return cnss_pci_dsp_link_control(plat_priv->bus_priv,
+						 link_enable);
+	default:
+		cnss_pr_err("Unsupported bus type: %d\n",
+			    plat_priv->bus_type);
+		return -EINVAL;
 	}
 }

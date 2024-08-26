@@ -25,6 +25,7 @@
 #include <linux/mutex.h>
 #include <linux/pm_runtime.h>
 #include <linux/netdevice.h>
+#include <linux/rcupdate.h>
 #include <linux/sched/signal.h>
 #include <linux/sysfs.h>
 
@@ -1411,19 +1412,12 @@ static void device_links_purge(struct device *dev)
 	device_links_write_unlock();
 }
 
-#ifdef CONFIG_QGKI
-extern int i2c_gpio_init_done;
-#endif
 static void fw_devlink_link_device(struct device *dev)
 {
 	int fw_ret;
 
 	mutex_lock(&defer_fw_devlink_lock);
-	if (!defer_fw_devlink_count
-#ifdef CONFIG_QGKI
-		&& i2c_gpio_init_done
-#endif
-)
+	if (!defer_fw_devlink_count)
 		device_link_add_missing_supplier_links();
 
 	/*
@@ -1850,6 +1844,7 @@ static int dev_uevent(struct kset *kset, struct kobject *kobj,
 		      struct kobj_uevent_env *env)
 {
 	struct device *dev = kobj_to_dev(kobj);
+	struct device_driver *driver;
 	int retval = 0;
 
 	/* add device node properties if present */
@@ -1878,8 +1873,12 @@ static int dev_uevent(struct kset *kset, struct kobject *kobj,
 	if (dev->type && dev->type->name)
 		add_uevent_var(env, "DEVTYPE=%s", dev->type->name);
 
-	if (dev->driver)
-		add_uevent_var(env, "DRIVER=%s", dev->driver->name);
+	/* Synchronize with module_remove_driver() */
+	rcu_read_lock();
+	driver = READ_ONCE(dev->driver);
+	if (driver)
+		add_uevent_var(env, "DRIVER=%s", driver->name);
+	rcu_read_unlock();
 
 	/* Add common DT information about the device */
 	of_device_uevent(dev, env);
@@ -4124,6 +4123,11 @@ define_dev_printk_level(_dev_info, KERN_INFO);
  * with::
  *
  * 	return dev_err_probe(dev, err, ...);
+ *
+ * Note that it is deemed acceptable to use this function for error
+ * prints during probe even if the @err is known to never be -EPROBE_DEFER.
+ * The benefit compared to a normal dev_err() is the standardized format
+ * of the error code and the fact that the error code is returned.
  *
  * Returns @err.
  *

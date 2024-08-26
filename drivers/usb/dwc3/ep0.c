@@ -21,19 +21,16 @@
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
 #include <linux/usb/composite.h>
+#ifdef OPLUS_FEATURE_CHG_BASIC
+#if IS_ENABLED(CONFIG_OPLUS_CHG)
+#include <linux/usb/dwc3-msm.h>
+#endif
+#endif
 
 #include "core.h"
 #include "debug.h"
 #include "gadget.h"
 #include "io.h"
-
-#include <linux/battery/sec_battery_common.h>
-#ifdef CONFIG_USB_NOTIFY_PROC_LOG
-#include <linux/usb_notify.h>
-#endif
-#if IS_ENABLED(CONFIG_USB_TYPEC_MANAGER_NOTIFIER)
-#include <linux/usb/typec/manager/usb_typec_manager_notifier.h>
-#endif
 
 static void __dwc3_ep0_do_control_status(struct dwc3 *dwc, struct dwc3_ep *dep);
 static void __dwc3_ep0_do_control_data(struct dwc3 *dwc,
@@ -632,6 +629,12 @@ static int dwc3_ep0_set_address(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 	else
 		usb_gadget_set_state(&dwc->gadget, USB_STATE_DEFAULT);
 
+#ifdef OPLUS_FEATURE_CHG_BASIC
+#if IS_ENABLED(CONFIG_OPLUS_CHG)
+	oplus_dwc3_notify_event(DWC3_ENUM_DONE);
+#endif
+#endif
+
 	return 0;
 }
 
@@ -721,9 +724,6 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 			if (!dwc->dis_u2_entry_quirk)
 				reg |= DWC3_DCTL_ACCEPTU2ENA;
 			dwc3_writel(dwc->regs, DWC3_DCTL, reg);
-			/* user notification for android auto connection */
-			if (dwc->usb_function_info & GADGET_ACCESSORY)
-				dwc->acc_dev_status = true;
 		}
 		break;
 
@@ -853,35 +853,8 @@ static int dwc3_ep0_std_request(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 	case USB_REQ_SET_ADDRESS:
 		ret = dwc3_ep0_set_address(dwc, ctrl);
 		break;
-	case USB_REQ_GET_DESCRIPTOR:
-		if ((le16_to_cpu(ctrl->wValue) >> 8) == USB_DT_DEVICE
-				&& le16_to_cpu(ctrl->wLength) == USB_DT_DEVICE_SIZE) {
-			pr_info("usb: GET_DES\n");
-#ifdef CONFIG_USB_NOTIFY_PROC_LOG
-			store_usblog_notify(NOTIFY_USBSTATE,
-				(void *)"USB_STATE=ENUM:GET:DES", NULL);
-#endif
-#if IS_ENABLED(CONFIG_USB_TYPEC_MANAGER_NOTIFIER)
-			set_usb_enumeration_state(dwc->gadget.speed);
-#endif
-		}
-		ret = dwc3_ep0_delegate_req(dwc, ctrl);
-		break;
 	case USB_REQ_SET_CONFIGURATION:
 		ret = dwc3_ep0_set_config(dwc, ctrl);
-#if IS_ENABLED(CONFIG_USB_CHARGING_EVENT)
-		if (ret < 0)
-			break;
-		if (dwc->gadget.speed == USB_SPEED_SUPER)
-			dwc->vbus_current = USB_CURRENT_SUPER_SPEED;
-		else
-			dwc->vbus_current = USB_CURRENT_HIGH_SPEED;
-		schedule_work(&dwc->set_vbus_current_work);
-#endif
-#ifdef CONFIG_USB_NOTIFY_PROC_LOG
-		store_usblog_notify(NOTIFY_USBSTATE,
-			(void *)"USB_STATE=ENUM:SET:CON", NULL);
-#endif
 		break;
 	case USB_REQ_SET_SEL:
 		ret = dwc3_ep0_set_sel(dwc, ctrl);
@@ -896,6 +869,30 @@ static int dwc3_ep0_std_request(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 
 	return ret;
 }
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+#if IS_ENABLED(CONFIG_OPLUS_CHG)
+static void (*oplus_notify_event)(enum oplus_dwc3_notify_event);
+void oplus_dwc3_set_notifier(void (*notify)(enum oplus_dwc3_notify_event))
+{
+	oplus_notify_event = notify;
+}
+EXPORT_SYMBOL(oplus_dwc3_set_notifier);
+
+int oplus_dwc3_notify_event(enum oplus_dwc3_notify_event event)
+{
+	int ret = 0;
+
+	if (oplus_notify_event)
+		oplus_notify_event(event);
+	else
+		ret = -ENODEV;
+
+	return ret;
+}
+EXPORT_SYMBOL(oplus_dwc3_notify_event);
+#endif
+#endif
 
 static void dwc3_ep0_inspect_setup(struct dwc3 *dwc,
 		const struct dwc3_event_depevt *event)

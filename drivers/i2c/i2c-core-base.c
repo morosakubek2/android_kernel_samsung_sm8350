@@ -883,10 +883,13 @@ static int dummy_remove(struct i2c_client *client)
 }
 
 static struct i2c_driver dummy_driver = {
-	.driver.name	= "dummy",
 	.probe		= dummy_probe,
 	.remove		= dummy_remove,
 	.id_table	= dummy_id,
+	.driver = {
+		.name = "dummy",
+		.probe_type = PROBE_FORCE_SYNCHRONOUS,
+	},
 };
 
 /**
@@ -1348,7 +1351,7 @@ static int i2c_register_adapter(struct i2c_adapter *adap)
 
 	/* Set default timeout to 1 second if not already set */
 	if (adap->timeout == 0)
-		adap->timeout = HZ;
+		adap->timeout = 1000;
 
 	/* register soft irqs for Host Notify */
 	res = i2c_setup_host_notify_irq_domain(adap);
@@ -1965,12 +1968,17 @@ static int i2c_check_for_quirks(struct i2c_adapter *adap, struct i2c_msg *msgs, 
  * Returns negative errno, else the number of messages executed.
  *
  * Adapter lock must be held when calling this function. No debug logging
- * takes place. adap->algo->master_xfer existence isn't checked.
+ * takes place.
  */
 int __i2c_transfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 {
 	unsigned long orig_jiffies;
 	int ret, try;
+
+	if (!adap->algo->master_xfer) {
+		dev_dbg(&adap->dev, "I2C level transfers not supported\n");
+		return -EOPNOTSUPP;
+	}
 
 	if (WARN_ON(!msgs || num < 1))
 		return -EINVAL;
@@ -2006,7 +2014,7 @@ int __i2c_transfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 
 		if (ret != -EAGAIN)
 			break;
-		if (time_after(jiffies, orig_jiffies + adap->timeout))
+		if (time_after(jiffies, orig_jiffies + msecs_to_jiffies(adap->timeout)))
 			break;
 	}
 
@@ -2037,11 +2045,6 @@ EXPORT_SYMBOL(__i2c_transfer);
 int i2c_transfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 {
 	int ret;
-
-	if (!adap->algo->master_xfer) {
-		dev_dbg(&adap->dev, "I2C level transfers not supported\n");
-		return -EOPNOTSUPP;
-	}
 
 	/* REVISIT the fault reporting model here is weak:
 	 *

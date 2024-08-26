@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2017-2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -490,7 +491,7 @@ static bool scm_is_security_match(struct scan_filter *filter,
 	if (!filter->authmodeset)
 		return scm_match_any_security(filter, db_entry, security);
 
-	for (i = 0; i <= WLAN_CRYPTO_AUTH_MAX && !match; i++) {
+	for (i = 0; i < WLAN_CRYPTO_AUTH_MAX && !match; i++) {
 		if (!QDF_HAS_PARAM(filter->authmodeset, i))
 			continue;
 
@@ -505,6 +506,7 @@ static bool scm_is_security_match(struct scan_filter *filter,
 			if (match)
 				break;
 		/* If not OPEN, then check WEP match so fall through */
+			/* fallthrough */
 		case WLAN_CRYPTO_AUTH_SHARED:
 			match = scm_check_wep(filter, db_entry, security);
 			break;

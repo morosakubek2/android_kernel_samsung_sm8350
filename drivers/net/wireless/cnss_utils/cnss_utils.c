@@ -7,7 +7,9 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/etherdevice.h>
+#ifdef CONFIG_DEBUG_FS
 #include <linux/debugfs.h>
+#endif
 #include <net/cnss_utils.h>
 
 #define CNSS_MAX_CH_NUM 157
@@ -311,6 +313,7 @@ enum cnss_utils_cc_src cnss_utils_get_cc_source(struct device *dev)
 }
 EXPORT_SYMBOL(cnss_utils_get_cc_source);
 
+#ifdef CONFIG_DEBUG_FS
 static ssize_t cnss_utils_mac_write(struct file *fp,
 				    const char __user *user_buf,
 				    size_t count, loff_t *off)
@@ -441,6 +444,12 @@ static int cnss_utils_debugfs_create(struct cnss_utils_priv *priv)
 out:
 	return ret;
 }
+#else
+static int cnss_utils_debugfs_create(struct cnss_utils_priv *priv)
+{
+	return 0;
+}
+#endif
 
 static int __init cnss_utils_init(void)
 {
@@ -454,7 +463,9 @@ static int __init cnss_utils_init(void)
 
 	mutex_init(&priv->unsafe_channel_list_lock);
 	spin_lock_init(&priv->dfs_nol_info_lock);
+#ifdef CONFIG_DEBUG_FS
 	cnss_utils_debugfs_create(priv);
+#endif
 	cnss_utils_priv = priv;
 
 	return 0;

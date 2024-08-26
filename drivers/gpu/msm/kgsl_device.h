@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2002,2007-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #ifndef __KGSL_DEVICE_H
 #define __KGSL_DEVICE_H
 
 #include <linux/sched/mm.h>
 #include <linux/sched/task.h>
-#include <trace/events/gpu_mem.h>
 
 #include "kgsl.h"
 #include "kgsl_drawobj.h"
@@ -33,11 +33,11 @@
 #define KGSL_STATE_NONE		0x00000000
 #define KGSL_STATE_INIT		0x00000001
 #define KGSL_STATE_ACTIVE	0x00000002
-#define KGSL_STATE_NAP		0x00000004
+#define KGSL_STATE_NAP		0x00000004 /* Not Used */
 #define KGSL_STATE_SUSPEND	0x00000010
 #define KGSL_STATE_AWARE	0x00000020
 #define KGSL_STATE_SLUMBER	0x00000080
-#define KGSL_STATE_MINBW	0x00000100
+#define KGSL_STATE_MINBW	0x00000100 /* Not Used */
 
 /**
  * enum kgsl_event_results - result codes passed to an event callback when the
@@ -85,7 +85,6 @@ struct kgsl_device_private;
 struct kgsl_context;
 struct kgsl_power_stats;
 struct kgsl_event;
-struct kgsl_snapshot;
 
 struct kgsl_functable {
 	/* Mandatory functions - these functions must be implemented
@@ -117,8 +116,6 @@ struct kgsl_functable {
 	void (*power_stats)(struct kgsl_device *device,
 		struct kgsl_power_stats *stats);
 	unsigned int (*gpuid)(struct kgsl_device *device, unsigned int *chipid);
-	void (*snapshot)(struct kgsl_device *device,
-		struct kgsl_snapshot *snapshot, struct kgsl_context *context);
 	irqreturn_t (*irq_handler)(struct kgsl_device *device);
 	int (*drain)(struct kgsl_device *device);
 	struct kgsl_device_private * (*device_private_create)(void);
@@ -154,8 +151,6 @@ struct kgsl_functable {
 	void (*pwrlevel_change_settings)(struct kgsl_device *device,
 		unsigned int prelevel, unsigned int postlevel, bool post);
 	void (*regulator_disable_poll)(struct kgsl_device *device);
-	void (*clk_set_options)(struct kgsl_device *device,
-		const char *name, struct clk *clk, bool on);
 	void (*gpu_model)(struct kgsl_device *device, char *str,
 		size_t bufsz);
 	/**
@@ -252,8 +247,6 @@ struct kgsl_device {
 	uint32_t requested_state;
 
 	atomic_t active_cnt;
-	/** @total_mapped: To trace overall gpu memory usage */
-	atomic64_t total_mapped;
 
 	wait_queue_head_t active_cnt_wq;
 	struct platform_device *pdev;
@@ -261,6 +254,7 @@ struct kgsl_device {
 	struct idr context_idr;
 	rwlock_t context_lock;
 
+#if 0
 	struct {
 		void *ptr;
 		u32 size;
@@ -279,7 +273,6 @@ struct kgsl_device {
 	bool force_panic;		/* Force panic after snapshot dump */
 	bool skip_ib_capture;		/* Skip IB capture after snapshot */
 	bool prioritize_unrecoverable;	/* Overwrite with new GMU snapshots */
-	bool set_isdb_breakpoint;	/* Set isdb registers before snapshot */
 	bool snapshot_atomic;		/* To capture snapshot in atomic context*/
 	/* Use CP Crash dumper to get GPU snapshot*/
 	bool snapshot_crashdumper;
@@ -287,13 +280,16 @@ struct kgsl_device {
 	bool snapshot_legacy;
 
 	struct kobject snapshot_kobj;
-
+#endif
+#ifdef CONFIG_DEBUG_FS
+	bool set_isdb_breakpoint;	/* Set isdb registers before snapshot */
+#endif
 	struct kobject ppd_kobj;
 
 	struct kgsl_pwrscale pwrscale;
 
 	int reset_counter; /* Track how many GPU core resets have occurred */
-	struct workqueue_struct *events_wq;
+	struct kthread_worker *events_worker;
 
 	/* Number of active contexts seen globally for this device */
 	int active_context_count;
@@ -462,6 +458,10 @@ struct kgsl_process_private {
 	atomic_t ctxt_count;
 	spinlock_t ctxt_count_lock;
 	atomic64_t frame_count;
+	/**
+	 * @private_mutex: Mutex lock to protect kgsl_process_private
+	 */
+	struct mutex private_mutex;
 };
 
 /**
@@ -477,6 +477,7 @@ struct kgsl_device_private {
 	struct kgsl_process_private *process_priv;
 };
 
+#if 0
 /**
  * struct kgsl_snapshot - details for a specific snapshot instance
  * @ib1base: Active IB1 base address at the time of fault
@@ -543,6 +544,7 @@ struct kgsl_snapshot_object {
 	struct kgsl_mem_entry *entry;
 	struct list_head node;
 };
+#endif
 
 struct kgsl_device *kgsl_get_device(int dev_idx);
 
@@ -609,15 +611,6 @@ static inline int kgsl_state_is_awake(struct kgsl_device *device)
 		return false;
 }
 
-static inline bool kgsl_state_is_nap_or_minbw(struct kgsl_device *device)
-{
-	if (device->state == KGSL_STATE_NAP ||
-		device->state == KGSL_STATE_MINBW)
-		return true;
-
-	return false;
-}
-
 /**
  * kgsl_start_idle_timer - Start the idle timer
  * @device: A KGSL device handle
@@ -641,20 +634,6 @@ int kgsl_device_platform_probe(struct kgsl_device *device);
 void kgsl_device_platform_remove(struct kgsl_device *device);
 
 const char *kgsl_pwrstate_to_str(unsigned int state);
-
-/**
- * kgsl_device_snapshot_probe - add resources for the device GPU snapshot
- * @device: The device to initialize
- * @size: The size of the static region to allocate
- *
- * Allocate memory for a GPU snapshot for the specified device,
- * and create the sysfs files to manage it
- */
-void kgsl_device_snapshot_probe(struct kgsl_device *device, u32 size);
-
-void kgsl_device_snapshot(struct kgsl_device *device,
-			struct kgsl_context *context, bool gmu_fault);
-void kgsl_device_snapshot_close(struct kgsl_device *device);
 
 void kgsl_events_init(void);
 void kgsl_events_exit(void);
@@ -912,6 +891,7 @@ static inline int kgsl_sysfs_store(const char *buf, unsigned int *ptr)
 	return 0;
 }
 
+#if 0
 /*
  * A helper macro to print out "not enough memory functions" - this
  * makes it easy to standardize the messages as well as cut down on
@@ -955,6 +935,7 @@ void kgsl_snapshot_add_section(struct kgsl_device *device, u16 id,
 	struct kgsl_snapshot *snapshot,
 	size_t (*func)(struct kgsl_device *, u8 *, size_t, void *),
 	void *priv);
+#endif
 
 /**
  * kgsl_of_property_read_ddrtype - Get property from devicetree based on
@@ -1010,25 +991,5 @@ struct kgsl_pwr_limit {
 	unsigned int level;
 	struct kgsl_device *device;
 };
-
-/**
- * kgsl_trace_gpu_mem_total - Overall gpu memory usage tracking which includes
- * process allocations, imported dmabufs and kgsl globals
- * @device: A KGSL device handle
- * @delta: delta of total mapped memory size
- */
-#ifdef CONFIG_TRACE_GPU_MEM
-static inline void kgsl_trace_gpu_mem_total(struct kgsl_device *device,
-						s64 delta)
-{
-	u64 total_size;
-
-	total_size = atomic64_add_return(delta, &device->total_mapped);
-	trace_gpu_mem_total(0, 0, total_size);
-}
-#else
-static inline void kgsl_trace_gpu_mem_total(struct kgsl_device *device,
-						s64 delta) {}
-#endif
 
 #endif  /* __KGSL_DEVICE_H */

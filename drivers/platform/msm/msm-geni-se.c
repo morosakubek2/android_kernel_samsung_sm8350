@@ -103,9 +103,7 @@ struct geni_se_device {
 	struct bus_vectors *vectors;
 	int num_paths;
 	bool vote_for_bw;
-#if defined(CONFIG_QC_BT_UART)
 	struct se_geni_rsc wrapper_rsc;
-#endif
 };
 
 #define HW_VER_MAJOR_MASK GENMASK(31, 28)
@@ -123,7 +121,7 @@ struct geni_se_device {
  */
 unsigned int geni_read_reg_nolog(void __iomem *base, int offset)
 {
-	return readl_relaxed_no_log(base + offset);
+	return readl_relaxed(base + offset);
 }
 EXPORT_SYMBOL(geni_read_reg_nolog);
 
@@ -135,7 +133,7 @@ EXPORT_SYMBOL(geni_read_reg_nolog);
  */
 void geni_write_reg_nolog(unsigned int value, void __iomem *base, int offset)
 {
-	return writel_relaxed_no_log(value, (base + offset));
+	return writel_relaxed(value, (base + offset));
 }
 EXPORT_SYMBOL(geni_write_reg_nolog);
 
@@ -1549,12 +1547,10 @@ void geni_se_dump_dbg_regs(struct se_geni_rsc *rsc, void __iomem *base,
 	u32 se_dma_rx_len_in = 0;
 	u32 se_dma_tx_len = 0;
 	u32 se_dma_tx_len_in = 0;
-#if defined(CONFIG_QC_BT_UART)
 	u32 geni_m_irq_en = 0;
 	u32 geni_s_irq_en = 0;
 	u32 geni_dma_tx_irq_en = 0;
 	u32 geni_dma_rx_irq_en = 0;
-#endif
 	struct geni_se_device *geni_se_dev;
 
 	if (!ipc)
@@ -1583,12 +1579,10 @@ void geni_se_dump_dbg_regs(struct se_geni_rsc *rsc, void __iomem *base,
 	se_dma_rx_len_in = geni_read_reg(base, SE_DMA_RX_LEN_IN);
 	se_dma_tx_len = geni_read_reg(base, SE_DMA_TX_LEN);
 	se_dma_tx_len_in = geni_read_reg(base, SE_DMA_TX_LEN_IN);
-#if defined(CONFIG_QC_BT_UART)
 	geni_m_irq_en = geni_read_reg(base, SE_GENI_M_IRQ_EN);
 	geni_s_irq_en = geni_read_reg(base, SE_GENI_S_IRQ_EN);
 	geni_dma_tx_irq_en = geni_read_reg(base, SE_DMA_TX_IRQ_EN);
 	geni_dma_rx_irq_en = geni_read_reg(base, SE_DMA_RX_IRQ_EN);
-#endif
 
 	GENI_SE_DBG(ipc, false, NULL,
 	"%s: m_cmd0:0x%x, m_irq_status:0x%x, geni_status:0x%x, geni_ios:0x%x\n",
@@ -1599,17 +1593,12 @@ void geni_se_dump_dbg_regs(struct se_geni_rsc *rsc, void __iomem *base,
 	GENI_SE_DBG(ipc, false, NULL,
 	"se_dma_dbg:0x%x, m_cmd_ctrl:0x%x, dma_rxlen:0x%x, dma_rxlen_in:0x%x\n",
 	se_dma_dbg, m_cmd_ctrl, se_dma_rx_len, se_dma_rx_len_in);
-#if defined(CONFIG_QC_BT_UART)
 	GENI_SE_DBG(ipc, false, NULL,
 	"dma_txlen:0x%x, dma_txlen_in:0x%x s_irq_status:0x%x\n",
 	se_dma_tx_len, se_dma_tx_len_in, s_irq_status);
 	GENI_SE_DBG(ipc, false, NULL,
 	"dma_txirq_en:0x%x, dma_rxirq_en:0x%x geni_m_irq_en:0x%x geni_s_irq_en:0x%x\n",
 	geni_dma_tx_irq_en, geni_dma_rx_irq_en, geni_m_irq_en, geni_s_irq_en);
-#else
-	GENI_SE_DBG(ipc, false, NULL,
-	"dma_txlen:0x%x, dma_txlen_in:0x%x\n", se_dma_tx_len, se_dma_tx_len_in);
-#endif
 }
 EXPORT_SYMBOL(geni_se_dump_dbg_regs);
 
@@ -1659,7 +1648,6 @@ out:
 	return NULL;
 }
 
-#if defined(CONFIG_QC_BT_UART)
 void geni_se_remove_earlycon_icc_vote(struct device *dev)
 {
 	struct platform_device *pdev;
@@ -1687,7 +1675,6 @@ void geni_se_remove_earlycon_icc_vote(struct device *dev)
 	of_node_put(parent);
 }
 EXPORT_SYMBOL(geni_se_remove_earlycon_icc_vote);
-#endif
 
 static int geni_se_iommu_probe(struct device *dev)
 {
@@ -1780,7 +1767,6 @@ static int geni_se_probe(struct platform_device *pdev)
 
 	dev_set_drvdata(dev, geni_se_dev);
 
-#if defined(CONFIG_QC_BT_UART)
 	/*
 	 * TBD: Proxy vote on QUP core path on behalf of earlycon.
 	 * Once the ICC sync state feature is implemented, we can make
@@ -1804,7 +1790,6 @@ static int geni_se_probe(struct platform_device *pdev)
 				ret);
 		return ret;
 	}
-#endif
 #endif
 
 	ret = of_platform_populate(dev->of_node, geni_se_dt_match, NULL, dev);

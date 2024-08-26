@@ -10,32 +10,8 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/dma-noncoherent.h>
-#include <linux/jiffies.h>
-#include <linux/sched/cputime.h>
 
-#define CREATE_TRACE_POINTS
-#include "ion_trace.h"
 #include "ion_private.h"
-
-#ifdef CONFIG_ION_MSM_HEAPS
-#include <uapi/linux/msm_ion_ids.h>
-#endif
-
-static atomic_long_t total_heap_bytes;
-
-static void track_buffer_created(struct ion_buffer *buffer)
-{
-	long total = atomic_long_add_return(buffer->size, &total_heap_bytes);
-
-	trace_ion_stat(buffer->sg_table, buffer->size, total);
-}
-
-static void track_buffer_destroyed(struct ion_buffer *buffer)
-{
-	long total = atomic_long_sub_return(buffer->size, &total_heap_bytes);
-
-	trace_ion_stat(buffer->sg_table, -buffer->size, total);
-}
 
 /* this function should only be called while dev->lock is held */
 static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
@@ -72,24 +48,8 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
 		goto err1;
 	}
 
-	spin_lock(&heap->stat_lock);
-	heap->num_of_buffers++;
-	heap->num_of_alloc_bytes += len;
-	if (heap->num_of_alloc_bytes > heap->alloc_bytes_wm)
-		heap->alloc_bytes_wm = heap->num_of_alloc_bytes;
-	if (heap->num_of_buffers == 1) {
-		/* This module reference lasts as long as at least one
-		 * buffer is allocated from the heap. We are protected
-		 * against ion_device_remove_heap() with dev->lock, so we can
-		 * safely assume the module reference is going to* succeed.
-		 */
-		__module_get(heap->owner);
-	}
-	spin_unlock(&heap->stat_lock);
-
 	INIT_LIST_HEAD(&buffer->attachments);
 	mutex_init(&buffer->lock);
-	track_buffer_created(buffer);
 	return buffer;
 
 err1:
@@ -141,9 +101,6 @@ struct ion_buffer *ion_buffer_alloc(struct ion_device *dev, size_t len,
 	struct ion_buffer *buffer = NULL;
 	struct ion_heap *heap;
 	char task_comm[TASK_COMM_LEN];
-	unsigned long jiffies_s = jiffies;
-	u64 utime, stime_s, stime_e, stime_d;
-	static DEFINE_RATELIMIT_STATE(show_mem_ratelimit, HZ * 10, 1);
 
 	if (!dev || !len) {
 		return ERR_PTR(-EINVAL);
@@ -155,14 +112,6 @@ struct ion_buffer *ion_buffer_alloc(struct ion_device *dev, size_t len,
 				    __func__, task_comm, current->tgid);
 	}
 
-#ifdef CONFIG_ION_RBIN_HEAP
-	if ((heap_id_mask & ION_CAMERA_HEAP_ID) &&
-	    (heap_id_mask & ~ION_CAMERA_HEAP_ID)) {
-		if (len < SZ_1M)
-			heap_id_mask &= ~ION_CAMERA_HEAP_ID;
-	}
-#endif
-
 	/*
 	 * traverse the list of heaps available in this system in priority
 	 * order.  If the heap type is supported by the client, and matches the
@@ -173,17 +122,12 @@ struct ion_buffer *ion_buffer_alloc(struct ion_device *dev, size_t len,
 	if (!len)
 		return ERR_PTR(-EINVAL);
 
-	task_cputime(current, &utime, &stime_s);
-
 	down_read(&dev->lock);
 	plist_for_each_entry(heap, &dev->heaps, node) {
 		/* if the caller didn't specify this heap id */
 		if (!((1 << heap->id) & heap_id_mask))
 			continue;
-		tracing_mark_begin("%s(%s, %zu, 0x%x, 0x%x)", "ion_alloc",
-				   heap->name, len, heap_id_mask, flags);
 		buffer = ion_buffer_create(heap, dev, len, flags);
-		tracing_mark_end();
 		if (!IS_ERR(buffer))
 			break;
 	}
@@ -194,17 +138,6 @@ struct ion_buffer *ion_buffer_alloc(struct ion_device *dev, size_t len,
 
 	if (IS_ERR(buffer))
 		return ERR_CAST(buffer);
-
-	task_cputime(current, &utime, &stime_e);
-	stime_d = stime_e - stime_s;
-	if (stime_d / NSEC_PER_MSEC > 100) {
-		pr_info("%s ion_heap_id: %d mask=0x%x timeJS(ms):%u/%llu len:%zu\n",
-			__func__, heap->id, heap_id_mask,
-			jiffies_to_msecs(jiffies - jiffies_s),
-			stime_d / NSEC_PER_MSEC, len);
-		if (__ratelimit(&show_mem_ratelimit))
-			show_mem(0, NULL);
-	}
 
 	return buffer;
 }
@@ -253,13 +186,6 @@ void ion_buffer_release(struct ion_buffer *buffer)
 		ion_heap_unmap_kernel(buffer->heap, buffer);
 	}
 	buffer->heap->ops->free(buffer);
-	spin_lock(&buffer->heap->stat_lock);
-	buffer->heap->num_of_buffers--;
-	buffer->heap->num_of_alloc_bytes -= buffer->size;
-	if (buffer->heap->num_of_buffers == 0)
-		module_put(buffer->heap->owner);
-	spin_unlock(&buffer->heap->stat_lock);
-	/* drop reference to the heap module */
 
 	kfree(buffer);
 }
@@ -274,8 +200,6 @@ int ion_buffer_destroy(struct ion_device *dev, struct ion_buffer *buffer)
 	}
 
 	heap = buffer->heap;
-	track_buffer_destroyed(buffer);
-
 	if (heap->flags & ION_HEAP_FLAG_DEFER_FREE)
 		ion_heap_freelist_add(heap, buffer);
 	else
@@ -313,9 +237,4 @@ void ion_buffer_kmap_put(struct ion_buffer *buffer)
 		ion_heap_unmap_kernel(buffer->heap, buffer);
 		buffer->vaddr = NULL;
 	}
-}
-
-u64 ion_get_total_heap_bytes(void)
-{
-	return atomic_long_read(&total_heap_bytes);
 }

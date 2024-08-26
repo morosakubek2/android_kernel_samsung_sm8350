@@ -10,27 +10,13 @@
 #include <linux/swap.h>
 #include <linux/sched/signal.h>
 
-#ifdef CONFIG_HUGEPAGE_POOL
-#include <linux/hugepage_pool.h>
-#endif
-
 #include "ion_page_pool.h"
 
 static inline struct page *ion_page_pool_alloc_pages(struct ion_page_pool *pool)
 {
 	if (fatal_signal_pending(current))
 		return NULL;
-
-#ifdef CONFIG_HUGEPAGE_POOL
-	/* we assume that this path is only being used by system heap */
-	if (pool->order == HUGEPAGE_ORDER)
-		return alloc_zeroed_hugepage(pool->gfp_mask, pool->order, true,
-					     HPAGE_ION);
-	else
-		return alloc_pages(pool->gfp_mask, pool->order);
-#else
 	return alloc_pages(pool->gfp_mask, pool->order);
-#endif
 }
 
 static void ion_page_pool_free_pages(struct ion_page_pool *pool,
@@ -41,7 +27,7 @@ static void ion_page_pool_free_pages(struct ion_page_pool *pool,
 
 static void ion_page_pool_add(struct ion_page_pool *pool, struct page *page)
 {
-	mutex_lock(&pool->mutex);
+	spin_lock(&pool->lock);
 	if (PageHighMem(page)) {
 		list_add_tail(&page->lru, &pool->high_items);
 		pool->high_count++;
@@ -52,7 +38,7 @@ static void ion_page_pool_add(struct ion_page_pool *pool, struct page *page)
 
 	mod_node_page_state(page_pgdat(page), NR_KERNEL_MISC_RECLAIMABLE,
 							1 << pool->order);
-	mutex_unlock(&pool->mutex);
+	spin_unlock(&pool->lock);
 }
 
 static struct page *ion_page_pool_remove(struct ion_page_pool *pool, bool high)
@@ -75,38 +61,18 @@ static struct page *ion_page_pool_remove(struct ion_page_pool *pool, bool high)
 	return page;
 }
 
-struct page *ion_page_pool_only_alloc(struct ion_page_pool *pool)
-{
-	struct page *page = NULL;
-
-	BUG_ON(!pool);
-
-	if (!pool->high_count && !pool->low_count)
-		goto done;
-
-	if (mutex_trylock(&pool->mutex)) {
-		if (pool->high_count)
-			page = ion_page_pool_remove(pool, true);
-		else if (pool->low_count)
-			page = ion_page_pool_remove(pool, false);
-		mutex_unlock(&pool->mutex);
-	}
-done:
-	return page;
-}
-
 struct page *ion_page_pool_alloc(struct ion_page_pool *pool)
 {
 	struct page *page = NULL;
 
 	BUG_ON(!pool);
 
-	mutex_lock(&pool->mutex);
+	spin_lock(&pool->lock);
 	if (pool->high_count)
 		page = ion_page_pool_remove(pool, true);
 	else if (pool->low_count)
 		page = ion_page_pool_remove(pool, false);
-	mutex_unlock(&pool->mutex);
+	spin_unlock(&pool->lock);
 
 	if (!page)
 		page = ion_page_pool_alloc_pages(pool);
@@ -117,13 +83,7 @@ EXPORT_SYMBOL_GPL(ion_page_pool_alloc);
 
 void ion_page_pool_free(struct ion_page_pool *pool, struct page *page)
 {
-#ifndef CONFIG_ION_RBIN_HEAP
-       /*
-        * ION RBIN heap can utilize ion_page_pool_free() for pages which are
-        * not compound pages. Thus, comment out the below line.
-        */
 	BUG_ON(pool->order != compound_order(page));
-#endif
 
 	ion_page_pool_add(pool, page);
 }
@@ -143,9 +103,9 @@ int ion_page_pool_nr_pages(struct ion_page_pool *pool)
 {
 	int nr_total_pages;
 
-	mutex_lock(&pool->mutex);
+	spin_lock(&pool->lock);
 	nr_total_pages = ion_page_pool_total(pool, true);
-	mutex_unlock(&pool->mutex);
+	spin_unlock(&pool->lock);
 
 	return nr_total_pages;
 }
@@ -168,16 +128,16 @@ int ion_page_pool_shrink(struct ion_page_pool *pool, gfp_t gfp_mask,
 	while (freed < nr_to_scan) {
 		struct page *page;
 
-		mutex_lock(&pool->mutex);
+		spin_lock(&pool->lock);
 		if (pool->low_count) {
 			page = ion_page_pool_remove(pool, false);
 		} else if (high && pool->high_count) {
 			page = ion_page_pool_remove(pool, true);
 		} else {
-			mutex_unlock(&pool->mutex);
+			spin_unlock(&pool->lock);
 			break;
 		}
-		mutex_unlock(&pool->mutex);
+		spin_unlock(&pool->lock);
 		ion_page_pool_free_pages(pool, page);
 		freed += (1 << pool->order);
 	}
@@ -198,7 +158,7 @@ struct ion_page_pool *ion_page_pool_create(gfp_t gfp_mask, unsigned int order)
 	INIT_LIST_HEAD(&pool->high_items);
 	pool->gfp_mask = gfp_mask | __GFP_COMP;
 	pool->order = order;
-	mutex_init(&pool->mutex);
+	spin_lock_init(&pool->lock);
 	plist_node_init(&pool->list, order);
 
 	return pool;

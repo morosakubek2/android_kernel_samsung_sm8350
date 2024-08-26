@@ -39,7 +39,7 @@
 #define GSI_IN_BUFF_SIZE 2048
 #define GSI_IN_RMNET_BUFF_SIZE 31744
 #define GSI_IN_RNDIS_BUFF_SIZE 16384
-#define GSI_IN_DPL_BUFF_SIZE 31744
+#define GSI_IN_DPL_BUFF_SIZE 16384
 #define GSI_NUM_OUT_BUFFERS 14
 #define GSI_OUT_AGGR_SIZE 24576
 
@@ -313,7 +313,6 @@ struct f_gsi {
 	struct gsi_ctrl_port c_port;
 	void *ipc_log_ctxt;
 	bool rmnet_dtr_status;
-	bool rmnet_use_tcm_mem;
 
 	bool rwake_inprogress;
 

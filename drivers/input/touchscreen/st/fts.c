@@ -970,14 +970,12 @@ static int fts_vm_mem_lend(struct fts_ts_info *info)
 	acl_desc = fts_vm_get_acl(HH_TRUSTED_VM);
 	if (IS_ERR(acl_desc)) {
 		pr_err("Failed to get acl of IO memories for Trusted touch\n");
-		PTR_ERR(acl_desc);
 		return -EINVAL;
 	}
 
 	sgl_desc = fts_vm_get_sgl(info->vm_info);
 	if (IS_ERR(sgl_desc)) {
 		pr_err("Failed to get sgl of IO memories for Trusted touch\n");
-		PTR_ERR(sgl_desc);
 		rc = -EINVAL;
 		goto sgl_error;
 	}
@@ -6417,7 +6415,9 @@ static struct i2c_driver fts_i2c_driver = {
 
 static int __init fts_driver_init(void)
 {
+    printk("fts_driver_initwangkun++++++++++++++++++111111111111111\n");
 	return i2c_add_driver(&fts_i2c_driver);
+    printk("fts_driver_initwangkun++++++++++++++++++2222222222222\n");
 }
 
 static void __exit fts_driver_exit(void)

@@ -715,7 +715,7 @@ static void dcc_disable(struct dcc_drvdata *drvdata)
 		dev_err(drvdata->dev, "DCC is not ready Disabling DCC...\n");
 
 	for (curr_list = 0; curr_list < drvdata->nr_link_list; curr_list++) {
-		if (curr_list == 0 || curr_list == 5)
+		if (!drvdata->enable[curr_list])
 			continue;
 		dcc_writel(drvdata, 0, DCC_LL_CFG(curr_list));
 		dcc_writel(drvdata, 0, DCC_LL_BASE(curr_list));
@@ -1742,10 +1742,8 @@ static void dcc_configure_list(struct dcc_drvdata *drvdata,
 	if (ret == -1)
 		ret = dcc_dt_parse(drvdata, np);
 
-	if (!ret) {
-		dcc_disable(drvdata);
+	if (!ret)
 		dcc_enable(drvdata);
-	}
 }
 
 static int dcc_probe(struct platform_device *pdev)

@@ -42,7 +42,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <stdarg.h>
+#include <linux/stdarg.h>
 #include <linux/input.h>
 #include <linux/interrupt.h>
 #include <linux/serio.h>
@@ -84,7 +84,7 @@ int openChannel(struct i2c_client *clt)
 	return OK;
 }
 
-struct device *getDev()
+struct device *getDev(void)
 {
 	if (client != NULL)
 		return &(client->dev);
@@ -92,7 +92,7 @@ struct device *getDev()
 		return NULL;
 }
 
-struct i2c_client *getClient()
+struct i2c_client *getClient(void)
 {
 	if (client != NULL)
 		return client;

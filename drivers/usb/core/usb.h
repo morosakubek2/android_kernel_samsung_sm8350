@@ -36,9 +36,6 @@ extern void usb_deauthorize_interface(struct usb_interface *);
 extern void usb_authorize_interface(struct usb_interface *);
 extern void usb_detect_quirks(struct usb_device *udev);
 extern void usb_detect_interface_quirks(struct usb_device *udev);
-#ifdef CONFIG_USB_INTERFACE_LPM_LIST
-extern int usb_detect_interface_lpm(struct usb_device *udev);
-#endif
 extern void usb_release_quirk_list(void);
 extern bool usb_endpoint_is_blacklisted(struct usb_device *udev,
 		struct usb_host_interface *intf,
@@ -116,7 +113,7 @@ static inline int usb_port_resume(struct usb_device *udev, pm_message_t msg)
 	return 0;
 }
 
-#define usb_autosuspend_device(udev)		do {} while (0)
+#define usb_autosuspend_device(udev)		((void)0)
 static inline int usb_autoresume_device(struct usb_device *udev)
 {
 	return 0;

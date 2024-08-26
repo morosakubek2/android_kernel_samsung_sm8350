@@ -182,7 +182,7 @@ static int uart_port_startup(struct tty_struct *tty, struct uart_state *state,
 		int init_hw)
 {
 	struct uart_port *uport = uart_port_check(state);
-	void *addr;
+	unsigned long page;
 	unsigned long flags = 0;
 	int retval = 0;
 
@@ -198,13 +198,13 @@ static int uart_port_startup(struct tty_struct *tty, struct uart_state *state,
 	 * Initialise and allocate the transmit and temporary
 	 * buffer.
 	 */
-	addr = alloc_pages_exact(PAGE_SIZE * 4, GFP_KERNEL|__GFP_ZERO);
-	if (!addr)
+	page = get_zeroed_page(GFP_KERNEL);
+	if (!page)
 		return -ENOMEM;
 
 	uart_port_lock(state, flags);
 	if (!state->xmit.buf) {
-		state->xmit.buf = (unsigned char *) addr;
+		state->xmit.buf = (unsigned char *) page;
 		uart_circ_clear(&state->xmit);
 		uart_port_unlock(uport, flags);
 	} else {
@@ -213,7 +213,7 @@ static int uart_port_startup(struct tty_struct *tty, struct uart_state *state,
 		 * Do not free() the page under the port lock, see
 		 * uart_shutdown().
 		 */
-		free_pages_exact(addr, PAGE_SIZE * 4);
+		free_page(page);
 	}
 
 	retval = uport->ops->startup(uport);
@@ -316,7 +316,7 @@ static void uart_shutdown(struct tty_struct *tty, struct uart_state *state)
 	uart_port_unlock(uport, flags);
 
 	if (xmit_buf)
-		free_pages_exact((void *)xmit_buf, PAGE_SIZE * 4);
+		free_page((unsigned long)xmit_buf);
 }
 
 /**
@@ -364,7 +364,7 @@ uart_update_timeout(struct uart_port *port, unsigned int cflag,
 	 * Figure the timeout to send the above number of bits.
 	 * Add .02 seconds of slop
 	 */
-	port->timeout = (HZ * bits) / baud + HZ/50;
+	port->timeout = (msecs_to_jiffies(1000) * bits) / baud + msecs_to_jiffies(20);
 }
 
 EXPORT_SYMBOL(uart_update_timeout);
@@ -847,6 +847,14 @@ static int uart_set_info(struct tty_struct *tty, struct tty_port *port,
 	new_flags = (__force upf_t)new_info->flags;
 	old_custom_divisor = uport->custom_divisor;
 
+	if (!(uport->flags & UPF_FIXED_PORT)) {
+		unsigned int uartclk = new_info->baud_base * 16;
+		/* check needs to be done here before other settings made */
+		if (uartclk == 0) {
+			retval = -EINVAL;
+			goto exit;
+		}
+	}
 	if (!capable(CAP_SYS_ADMIN)) {
 		retval = -EPERM;
 		if (change_irq || change_port ||
@@ -1625,7 +1633,7 @@ static void uart_wait_until_sent(struct tty_struct *tty, int timeout)
 	 * Note: we have to use pretty tight timings here to satisfy
 	 * the NIST-PCTS.
 	 */
-	char_time = (port->timeout - HZ/50) / port->fifosize;
+	char_time = (port->timeout - msecs_to_jiffies(20)) / port->fifosize;
 	char_time = char_time / 5;
 	if (char_time == 0)
 		char_time = 1;

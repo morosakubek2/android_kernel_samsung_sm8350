@@ -2178,7 +2178,7 @@ int mhi_debugfs_mhi_regdump_show(struct seq_file *m, void *d)
 	enum mhi_dev_state state;
 	enum mhi_ee ee;
 	int i, ret;
-	u32 val;
+	u32 val = 0;
 	void __iomem *mhi_base = mhi_cntrl->regs;
 	void __iomem *bhi_base = mhi_cntrl->bhi;
 	void __iomem *bhie_base = mhi_cntrl->bhie;
@@ -2684,8 +2684,8 @@ int mhi_get_remote_time_sync(struct mhi_device *mhi_dev,
 	local_irq_disable();
 
 	*t_host = mhi_cntrl->time_get(mhi_cntrl, mhi_cntrl->priv_data);
-	*t_dev = (u64)readl_relaxed_no_log(mhi_tsync->time_reg_hi) << 32 |
-			readl_relaxed_no_log(mhi_tsync->time_reg_lo);
+	*t_dev = (u64)readl_relaxed(mhi_tsync->time_reg_hi) << 32 |
+			readl_relaxed(mhi_tsync->time_reg_lo);
 
 	local_irq_enable();
 	preempt_enable();
@@ -2790,7 +2790,7 @@ int mhi_get_remote_time(struct mhi_device *mhi_dev,
 
 	mhi_tsync->local_time =
 		mhi_cntrl->time_get(mhi_cntrl, mhi_cntrl->priv_data);
-	writel_relaxed_no_log(mhi_tsync->int_sequence, mhi_cntrl->tsync_db);
+	writel_relaxed(mhi_tsync->int_sequence, mhi_cntrl->tsync_db);
 	/* write must go thru immediately */
 	wmb();
 
@@ -2828,7 +2828,7 @@ void mhi_debug_reg_dump(struct mhi_controller *mhi_cntrl)
 	enum mhi_dev_state state;
 	enum mhi_ee ee;
 	int i, ret;
-	u32 val;
+	u32 val = 0;
 	void __iomem *mhi_base = mhi_cntrl->regs;
 	void __iomem *bhi_base = mhi_cntrl->bhi;
 	void __iomem *bhie_base = mhi_cntrl->bhie;

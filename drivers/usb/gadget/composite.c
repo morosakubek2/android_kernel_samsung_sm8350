@@ -20,11 +20,14 @@
 #include <linux/usb/composite.h>
 #include <linux/usb/otg.h>
 #include <asm/unaligned.h>
-#if defined(CONFIG_USB_NOTIFY_LAYER)
-#include <linux/usb_notify.h>
-#endif
 
 #include "u_os_desc.h"
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+static bool enable_l1_for_hs;
+module_param(enable_l1_for_hs, bool, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(enable_l1_for_hs, "Enable support for L1 LPM for HS devices");
+#endif
 
 /**
  * struct usb_os_string - represents OS String to be reported by a gadget
@@ -164,6 +167,8 @@ int config_ep_by_speed_and_alt(struct usb_gadget *g,
 	int want_comp_desc = 0;
 
 	struct usb_descriptor_header **d_spd; /* cursor for speed desc */
+	struct usb_composite_dev *cdev;
+	bool incomplete_desc = false;
 
 	if (!g || !f || !_ep)
 		return -EIO;
@@ -172,27 +177,42 @@ int config_ep_by_speed_and_alt(struct usb_gadget *g,
 	switch (g->speed) {
 	case USB_SPEED_SUPER_PLUS:
 		if (gadget_is_superspeed_plus(g)) {
-			speed_desc = f->ssp_descriptors;
-			want_comp_desc = 1;
-			break;
+			if (f->ssp_descriptors) {
+				speed_desc = f->ssp_descriptors;
+				want_comp_desc = 1;
+				break;
+			}
+			incomplete_desc = true;
 		}
 		/* fall through */
 	case USB_SPEED_SUPER:
 		if (gadget_is_superspeed(g)) {
-			speed_desc = f->ss_descriptors;
-			want_comp_desc = 1;
-			break;
+			if (f->ss_descriptors) {
+				speed_desc = f->ss_descriptors;
+				want_comp_desc = 1;
+				break;
+			}
+			incomplete_desc = true;
 		}
 		/* fall through */
 	case USB_SPEED_HIGH:
 		if (gadget_is_dualspeed(g)) {
-			speed_desc = f->hs_descriptors;
-			break;
+			if (f->hs_descriptors) {
+				speed_desc = f->hs_descriptors;
+				break;
+			}
+			incomplete_desc = true;
 		}
 		/* fall through */
 	default:
 		speed_desc = f->fs_descriptors;
 	}
+
+	cdev = get_gadget_data(g);
+	if (incomplete_desc)
+		WARNING(cdev,
+			"%s doesn't hold the descriptors for current speed\n",
+			f->name);
 
 	/* find correct alternate setting descriptor */
 	for_each_desc(speed_desc, d_spd, USB_DT_INTERFACE) {
@@ -249,12 +269,8 @@ ep_found:
 			_ep->maxburst = comp_desc->bMaxBurst + 1;
 			break;
 		default:
-			if (comp_desc->bMaxBurst != 0) {
-				struct usb_composite_dev *cdev;
-
-				cdev = get_gadget_data(g);
+			if (comp_desc->bMaxBurst != 0)
 				ERROR(cdev, "ep0 bMaxBurst must be 0\n");
-			}
 			_ep->maxburst = 1;
 			break;
 		}
@@ -567,11 +583,6 @@ static int config_buf(struct usb_configuration *config,
 	c->iConfiguration = config->iConfiguration;
 	c->bmAttributes = USB_CONFIG_ATT_ONE | config->bmAttributes;
 	c->bMaxPower = encode_bMaxPower(speed, config);
-	if (config->cdev->gadget->is_selfpowered) {
-		pr_info("usb: %s is_selfpowered\n", __func__);
-		c->bmAttributes |= USB_CONFIG_ATT_SELFPOWER;
-		c->bMaxPower = 0;
-	}
 
 	/* There may be e.g. OTG descriptors */
 	if (config->descriptors) {
@@ -610,10 +621,6 @@ static int config_desc(struct usb_composite_dev *cdev, unsigned w_value)
 	struct list_head		*pos;
 	u8				type = w_value >> 8;
 	enum usb_device_speed		speed = USB_SPEED_UNKNOWN;
-#if defined(CONFIG_USB_NOTIFY_LAYER)
-	int power_role, pd_contract;
-	struct otg_notify *o_notify = get_otg_notify();
-#endif
 
 	if (gadget->speed >= USB_SPEED_SUPER)
 		speed = gadget->speed;
@@ -655,23 +662,8 @@ static int config_desc(struct usb_composite_dev *cdev, unsigned w_value)
 				continue;
 		}
 
-		if (w_value == 0) {
-#if defined(CONFIG_USB_NOTIFY_LAYER)
-			if (o_notify == NULL)
-				return config_buf(c, speed, cdev->req->buf, type);
-
-			power_role = get_typec_status(o_notify, NOTIFY_EVENT_POWER_SOURCE);
-			pd_contract = get_typec_status(o_notify, NOTIFY_EVENT_PD_CONTRACT);
-
-			pr_err("usb: %s power_role(%d), pd_contract(%d)\n", __func__, power_role, pd_contract);
-			/* sink == 0, source == 1 */
-			if (!power_role && pd_contract)
-				usb_gadget_set_selfpowered(gadget);
-			else
-				usb_gadget_clear_selfpowered(gadget);
-#endif
+		if (w_value == 0)
 			return config_buf(c, speed, cdev->req->buf, type);
-		}
 		w_value--;
 	}
 	return -EINVAL;
@@ -1766,12 +1758,23 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 			cdev->desc.bMaxPacketSize0 =
 				cdev->gadget->ep0->maxpacket;
 			if (gadget_is_superspeed(gadget)) {
+#ifdef OPLUS_FEATURE_CHG_BASIC
+				if (gadget->speed >= USB_SPEED_SUPER) {
+					cdev->desc.bcdUSB = cpu_to_le16(0x0320);
+					cdev->desc.bMaxPacketSize0 = 9;
+				} else if (gadget->lpm_capable || enable_l1_for_hs)  {
+					cdev->desc.bcdUSB = cpu_to_le16(0x0210);
+				} else {
+					cdev->desc.bcdUSB = cpu_to_le16(0x0200);
+				}
+#else
 				if (gadget->speed >= USB_SPEED_SUPER) {
 					cdev->desc.bcdUSB = cpu_to_le16(0x0320);
 					cdev->desc.bMaxPacketSize0 = 9;
 				} else {
 					cdev->desc.bcdUSB = cpu_to_le16(0x0210);
 				}
+#endif
 			} else {
 				if (gadget->lpm_capable)
 					cdev->desc.bcdUSB = cpu_to_le16(0x0201);
@@ -1809,7 +1812,11 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 				value = min(w_length, (u16) value);
 			break;
 		case USB_DT_BOS:
+#ifdef OPLUS_FEATURE_CHG_BASIC
+			if ((gadget_is_superspeed(gadget) && (gadget->speed >= USB_SPEED_SUPER)) ||
+#else
 			if (gadget_is_superspeed(gadget) ||
+#endif
 			    gadget->lpm_capable) {
 				value = bos_desc(cdev);
 				value = min(w_length, (u16) value);
@@ -2006,7 +2013,7 @@ unknown:
 			buf[5] = 0x01;
 			switch (ctrl->bRequestType & USB_RECIP_MASK) {
 			case USB_RECIP_DEVICE:
-				if (w_index != 0x4 || (w_value >> 8))
+				if (w_index != 0x4 || (w_value & 0xff))
 					break;
 				buf[6] = w_index;
 				/* Number of ext compat interfaces */
@@ -2028,9 +2035,9 @@ unknown:
 				}
 				break;
 			case USB_RECIP_INTERFACE:
-				if (w_index != 0x5 || (w_value >> 8))
+				if (w_index != 0x5 || (w_value & 0xff))
 					break;
-				interface = w_value & 0xFF;
+				interface = w_value >> 8;
 				if (interface >= MAX_CONFIG_INTERFACES ||
 				    !os_desc_cfg->interface[interface])
 					break;

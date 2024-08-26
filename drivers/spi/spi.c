@@ -66,17 +66,6 @@ modalias_show(struct device *dev, struct device_attribute *a, char *buf)
 }
 static DEVICE_ATTR_RO(modalias);
 
-static ssize_t name_show(struct device *dev, struct device_attribute *a, char *buf)
-{
-	const struct spi_device	*spi = to_spi_device(dev);
-	const struct spi_driver *sdrv = to_spi_driver(spi->dev.driver);
-
-	if (sdrv->driver.name)
-		return sprintf(buf, "%s\n", sdrv->driver.name);
-	return sprintf(buf, "\n");
-}
-static DEVICE_ATTR_RO(name);
-
 static ssize_t driver_override_store(struct device *dev,
 				     struct device_attribute *a,
 				     const char *buf, size_t count)
@@ -204,7 +193,6 @@ SPI_STATISTICS_SHOW(transfers_split_maxsize, "%lu");
 static struct attribute *spi_dev_attrs[] = {
 	&dev_attr_modalias.attr,
 	&dev_attr_driver_override.attr,
-	&dev_attr_name.attr,
 	NULL,
 };
 
@@ -943,6 +931,7 @@ static int __spi_map_msg(struct spi_controller *ctlr, struct spi_message *msg)
 	else
 		rx_dev = ctlr->dev.parent;
 
+	ret = -ENOMSG;
 	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
 		if (!ctlr->can_dma(ctlr, msg->spi, xfer))
 			continue;
@@ -966,6 +955,9 @@ static int __spi_map_msg(struct spi_controller *ctlr, struct spi_message *msg)
 			}
 		}
 	}
+	/* No transfer has been mapped, bail out with success */
+	if (ret)
+		return 0;
 
 	ctlr->cur_msg_mapped = true;
 

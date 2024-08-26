@@ -62,8 +62,8 @@ static void devres_log(struct device *dev, struct devres_node *node,
 			op, node, node->name, (unsigned long)node->size);
 }
 #else /* CONFIG_DEBUG_DEVRES */
-#define set_node_dbginfo(node, n, s)	do {} while (0)
-#define devres_log(dev, node, op)	do {} while (0)
+#define set_node_dbginfo(node, n, s)	((void)0)
+#define devres_log(dev, node, op)	((void)0)
 #endif /* CONFIG_DEBUG_DEVRES */
 
 /*
@@ -1111,7 +1111,11 @@ EXPORT_SYMBOL_GPL(__devm_alloc_percpu);
  */
 void devm_free_percpu(struct device *dev, void __percpu *pdata)
 {
-	WARN_ON(devres_destroy(dev, devm_percpu_release, devm_percpu_match,
-			       (void *)pdata));
+	/*
+	 * Use devres_release() to prevent memory leakage as
+	 * devm_free_pages() does.
+	 */
+	WARN_ON(devres_release(dev, devm_percpu_release, devm_percpu_match,
+			       (__force void *)pdata));
 }
 EXPORT_SYMBOL_GPL(devm_free_percpu);

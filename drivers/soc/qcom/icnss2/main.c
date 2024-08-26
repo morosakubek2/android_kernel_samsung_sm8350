@@ -116,7 +116,7 @@ static void icnss_set_plat_priv(struct icnss_priv *priv)
 	penv = priv;
 }
 
-static struct icnss_priv *icnss_get_plat_priv()
+static struct icnss_priv *icnss_get_plat_priv(void)
 {
 	return penv;
 }
@@ -1751,14 +1751,19 @@ static int icnss_wpss_notifier_nb(struct notifier_block *nb,
 	icnss_pr_vdbg("WPSS-Notify: event %s(%lu)\n",
 		      icnss_subsys_notify_state_to_str(code), code);
 
-	if (code == SUBSYS_AFTER_SHUTDOWN) {
-		icnss_pr_info("Collecting msa0 segment dump\n");
-		icnss_msa0_ramdump(priv);
+	switch (code) {
+	case SUBSYS_BEFORE_SHUTDOWN:
+		break;
+	case SUBSYS_AFTER_SHUTDOWN:
+		/* Collect ramdump only when there was a crash. */
+		if (notif->crashed) {
+			icnss_pr_info("Collecting msa0 segment dump\n");
+			icnss_msa0_ramdump(priv);
+		}
+		goto out;
+	default:
 		goto out;
 	}
-
-	if (code != SUBSYS_BEFORE_SHUTDOWN)
-		goto out;
 
 	priv->is_ssr = true;
 
@@ -4067,6 +4072,8 @@ static int icnss_probe(struct platform_device *pdev)
 	if (ret)
 		goto out_free_resources;
 
+	device_enable_async_suspend(dev);
+
 	spin_lock_init(&priv->event_lock);
 	spin_lock_init(&priv->on_off_lock);
 	spin_lock_init(&priv->soc_wake_msg_lock);
@@ -4454,6 +4461,7 @@ static struct platform_driver icnss_driver = {
 		.name = "icnss2",
 		.pm = &icnss_pm_ops,
 		.of_match_table = icnss_dt_match,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 };
 

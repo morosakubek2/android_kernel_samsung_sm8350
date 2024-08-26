@@ -19,15 +19,8 @@
 #include <linux/slab.h>
 #include <linux/topology.h>
 
-#if IS_ENABLED(CONFIG_SEC_THERMAL_LOG)
-#include <linux/thermal.h>
-#endif
-
 #define CREATE_TRACE_POINTS
 #include <trace/events/dcvsh.h>
-
-#include <linux/sec_debug.h>
-#include <linux/sec_smem.h>
 
 #define LUT_MAX_ENTRIES			40U
 #define LUT_SRC				GENMASK(31, 30)
@@ -38,7 +31,7 @@
 #define CLK_HW_DIV			2
 #define GT_IRQ_STATUS			BIT(2)
 #define MAX_FN_SIZE			20
-#define LIMITS_POLLING_DELAY_MS		10
+#define LIMITS_POLLING_DELAY_MS		1
 #define MAX_ROW				2
 
 #define CYCLE_CNTR_OFFSET(core_id, m, acc_count)				\
@@ -80,10 +73,6 @@ struct cpufreq_qcom {
 	char dcvsh_irq_name[MAX_FN_SIZE];
 	bool is_irq_enabled;
 	bool is_irq_requested;
-#if IS_ENABLED(CONFIG_SEC_PM)
-	unsigned long lowest_freq;
-	bool limiting;
-#endif
 };
 
 struct cpufreq_counter {
@@ -149,19 +138,6 @@ static unsigned long limits_mitigation_notify(struct cpufreq_qcom *c,
 	trace_dcvsh_freq(cpumask_first(&c->related_cpus), freq);
 	c->dcvsh_freq_limit = freq;
 
-#if IS_ENABLED(CONFIG_SEC_PM)
-	if (c->limiting == false) {
-		THERMAL_IPC_LOG("Start lmh cpu%d @%lu\n",
-			cpumask_first(&c->related_cpus), freq);
-#if IS_ENABLED(CONFIG_SEC_THERMAL_LOG)
-		ss_thermal_print("Start lmh cpu%d @%lu\n",
-			cpumask_first(&c->related_cpus), freq);
-#endif			
-		c->lowest_freq = freq;
-		c->limiting = true;
-	}
-#endif
-
 	return freq;
 }
 
@@ -181,15 +157,11 @@ static void limits_dcvsh_poll(struct work_struct *work)
 	dcvsh_freq = qcom_cpufreq_hw_get(cpu);
 
 	if (freq_limit != dcvsh_freq) {
-#if IS_ENABLED(CONFIG_SEC_PM)
-	if ((c->limiting == true) && (freq_limit < c->lowest_freq))
-			c->lowest_freq = freq_limit;
-#endif
 		mod_delayed_work(system_highpri_wq, &c->freq_poll_work,
 				msecs_to_jiffies(LIMITS_POLLING_DELAY_MS));
 	} else {
 		/* Update scheduler for throttle removal */
-		freq_limit = limits_mitigation_notify(c, false);
+		limits_mitigation_notify(c, false);
 
 		regval = readl_relaxed(c->base + offsets[REG_INTR_CLR]);
 		regval |= GT_IRQ_STATUS;
@@ -197,18 +169,6 @@ static void limits_dcvsh_poll(struct work_struct *work)
 
 		c->is_irq_enabled = true;
 		enable_irq(c->dcvsh_irq);
-#if IS_ENABLED(CONFIG_SEC_PM)
-		THERMAL_IPC_LOG("Fin. lmh cpu%d, "
-			"lowest %lu, f_lim %lu, dcvsh %lu\n",
-			cpu, c->lowest_freq, freq_limit, dcvsh_freq);
-#if IS_ENABLED(CONFIG_SEC_THERMAL_LOG)
-		ss_thermal_print("Fin. lmh cpu%d, "
-			"lowest %lu, f_lim %lu, dcvsh %lu\n",
-			cpu, c->lowest_freq, freq_limit, dcvsh_freq);
-#endif
-		c->limiting = false;
-		c->lowest_freq = UINT_MAX;
-#endif
 	}
 
 	mutex_unlock(&c->dcvsh_lock);
@@ -257,7 +217,7 @@ static u64 qcom_cpufreq_get_cpu_cycle_counter(int cpu)
 
 	offset = CYCLE_CNTR_OFFSET(topology_core_id(cpu), policy->related_cpus,
 					accumulative_counter);
-	val = readl_relaxed_no_log(policy->driver_data +
+	val = readl_relaxed(policy->driver_data +
 				    offsets[REG_CYCLE_CNTR] + offset);
 
 	if (val < cpu_counter->prev_cycle_counter) {
@@ -294,10 +254,6 @@ qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
 	for (i = 0; i < c->sdpm_base_count && freq > policy->cur; i++)
 		writel_relaxed(freq / 1000, c->sdpm_base[i]);
 
-#if IS_ENABLED(CONFIG_SEC_DEBUG_APPS_CLK_LOGGING)
-	sec_smem_clk_osm_add_log_cpufreq(policy->cpu,
-				policy->freq_table[index].frequency, policy->kobj.name);
-#endif
 	writel_relaxed(index, policy->driver_data + offsets[REG_PERF_STATE]);
 	arch_set_freq_scale(policy->related_cpus, freq,
 			    policy->cpuinfo.max_freq);
@@ -481,7 +437,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 				    struct cpufreq_qcom *c, u32 max_cores)
 {
 	struct device *dev = &pdev->dev, *cpu_dev;
-	u32 data, src, lval, i, core_count, prev_cc, prev_freq, freq, volt;
+	u32 data, src, lval, i, core_count, prev_cc, prev_freq = 0, freq, volt;
 	unsigned long cpu;
 
 	c->table = devm_kcalloc(dev, lut_max_entries + 1,
@@ -657,7 +613,7 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 		c->dcvsh_irq = of_irq_get(dev->of_node, index);
 		if (c->dcvsh_irq > 0) {
 			mutex_init(&c->dcvsh_lock);
-			INIT_DEFERRABLE_WORK(&c->freq_poll_work,
+			INIT_DELAYED_WORK(&c->freq_poll_work,
 					limits_dcvsh_poll);
 		}
 	}

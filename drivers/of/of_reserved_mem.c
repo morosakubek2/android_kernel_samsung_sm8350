@@ -45,7 +45,6 @@ static int __init early_init_dt_alloc_reserved_memory_arch(phys_addr_t size,
 	return memblock_reserve(base, size);
 }
 
-static bool rmem_overflow;
 /**
  * res_mem_save_node() - save fdt node for second pass initialization
  */
@@ -56,7 +55,6 @@ void __init fdt_reserved_mem_save_node(unsigned long node, const char *uname,
 
 	if (reserved_mem_count == ARRAY_SIZE(reserved_mem)) {
 		pr_err("not enough space all defined regions.\n");
-		rmem_overflow = true;
 		return;
 	}
 
@@ -215,7 +213,6 @@ static int __init __rmem_cmp(const void *a, const void *b)
 	return 0;
 }
 
-static bool rmem_overlap;
 static void __init __rmem_check_for_overlap(void)
 {
 	int i;
@@ -239,7 +236,6 @@ static void __init __rmem_check_for_overlap(void)
 			pr_err("OVERLAP DETECTED!\n%s (%pa--%pa) overlaps with %s (%pa--%pa)\n",
 			       this->name, &this->base, &this_end,
 			       next->name, &next->base, &next_end);
-			rmem_overlap = true;
 		}
 	}
 }
@@ -260,10 +256,9 @@ void __init fdt_init_reserved_mem(void)
 		int len;
 		const __be32 *prop;
 		int err = 0;
-		int nomap, reusable;
+		int nomap;
 
 		nomap = of_get_flat_dt_prop(node, "no-map", NULL) != NULL;
-		reusable = of_get_flat_dt_prop(node, "reusable", NULL) != NULL;
 		prop = of_get_flat_dt_prop(node, "phandle", &len);
 		if (!prop)
 			prop = of_get_flat_dt_prop(node, "linux,phandle", &len);
@@ -281,14 +276,6 @@ void __init fdt_init_reserved_mem(void)
 				memblock_free(rmem->base, rmem->size);
 				if (nomap)
 					memblock_add(rmem->base, rmem->size);
-			} else {
-#ifdef CONFIG_ION_RBIN_HEAP
-				if (of_get_flat_dt_prop(node, "ion,recyclable", NULL))
-					reusable = true;
-#endif
-				memblock_memsize_record(rmem->name, rmem->base,
-							rmem->size, nomap,
-							reusable);
 			}
 		}
 	}
@@ -484,13 +471,3 @@ struct reserved_mem *of_reserved_mem_lookup(struct device_node *np)
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(of_reserved_mem_lookup);
-
-static int check_reserved_mem(void)
-{
-	if (rmem_overflow)
-		panic("overflow on reserved memory, check the latest change");
-	if (rmem_overlap)
-		panic("overlap on reserved memory, check the latest change");
-	return 0;
-}
-late_initcall(check_reserved_mem);

@@ -30,6 +30,7 @@ static int htc_issue_send(struct htc_target *target, struct sk_buff* skb,
 	hdr->endpoint_id = epid;
 	hdr->flags = flags;
 	hdr->payload_len = cpu_to_be16(len);
+	memset(hdr->control, 0, sizeof(hdr->control));
 
 	status = target->hif->send(target->hif_dev, endpoint->ul_pipeid, skb);
 
@@ -237,7 +238,7 @@ int htc_init(struct htc_target *target)
 	return htc_setup_complete(target);
 }
 
-int htc_connect_service(struct htc_target *target,
+int htc_connect_service_hst(struct htc_target *target,
 		     struct htc_service_connreq *service_connreq,
 		     enum htc_endpoint_id *conn_rsp_epid)
 {
@@ -278,6 +279,10 @@ int htc_connect_service(struct htc_target *target,
 	conn_msg->dl_pipeid = endpoint->dl_pipeid;
 	conn_msg->ul_pipeid = endpoint->ul_pipeid;
 
+	/* To prevent infoleak */
+	conn_msg->svc_meta_len = 0;
+	conn_msg->pad = 0;
+
 	ret = htc_issue_send(target, skb, skb->len, 0, ENDPOINT0);
 	if (ret)
 		goto err;
@@ -310,12 +315,12 @@ int htc_send_epid(struct htc_target *target, struct sk_buff *skb,
 	return htc_issue_send(target, skb, skb->len, 0, epid);
 }
 
-void htc_stop(struct htc_target *target)
+void htc_stop_hst(struct htc_target *target)
 {
 	target->hif->stop(target->hif_dev);
 }
 
-void htc_start(struct htc_target *target)
+void htc_start_hst(struct htc_target *target)
 {
 	target->hif->start(target->hif_dev);
 }
@@ -345,6 +350,8 @@ void ath9k_htc_txcompletion_cb(struct htc_target *htc_handle,
 
 	if (skb) {
 		htc_hdr = (struct htc_frame_hdr *) skb->data;
+		if (htc_hdr->endpoint_id >= ARRAY_SIZE(htc_handle->endpoint))
+			goto ret;
 		endpoint = &htc_handle->endpoint[htc_hdr->endpoint_id];
 		skb_pull(skb, sizeof(struct htc_frame_hdr));
 
@@ -390,7 +397,7 @@ static void ath9k_htc_fw_panic_report(struct htc_target *htc_handle,
  * HTC Messages are handled directly here and the obtained SKB
  * is freed.
  *
- * Service messages (Data, WMI) are passed to the corresponding
+ * Service messages (Data, WMI) passed to the corresponding
  * endpoint RX handlers, which have to free the SKB.
  */
 void ath9k_htc_rx_msg(struct htc_target *htc_handle,
@@ -477,8 +484,6 @@ invalid:
 		if (endpoint->ep_callbacks.rx)
 			endpoint->ep_callbacks.rx(endpoint->ep_callbacks.priv,
 						  skb, epid);
-		else
-			goto invalid;
 	}
 }
 

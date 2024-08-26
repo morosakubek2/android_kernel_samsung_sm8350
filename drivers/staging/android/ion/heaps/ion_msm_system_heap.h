@@ -9,15 +9,10 @@
 #define _ION_MSM_SYSTEM_HEAP_H
 
 #ifndef CONFIG_ALLOC_BUFFERS_IN_4K_CHUNKS
-#ifdef CONFIG_HUGEPAGE_POOL
-#include <linux/hugepage_pool.h>
-static const unsigned int orders[] = {HUGEPAGE_ORDER, 4, 0};
-#else
-#if defined(CONFIG_IOMMU_IO_PGTABLE_ARMV7S) && defined(CONFIG_QGKI)
+#if defined(CONFIG_IOMMU_IO_PGTABLE_ARMV7S) && !defined(CONFIG_64BIT) && !defined(CONFIG_ARM_LPAE)
 static const unsigned int orders[] = {8, 4, 0};
 #else
 static const unsigned int orders[] = {9, 4, 0};
-#endif
 #endif
 #else
 static const unsigned int orders[] = {0};

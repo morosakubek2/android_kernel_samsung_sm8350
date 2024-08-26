@@ -18,7 +18,6 @@
 #include <linux/rwsem.h>
 #include <linux/zsmalloc.h>
 #include <linux/crypto.h>
-#include <linux/mm.h>
 
 #include "zcomp.h"
 
@@ -31,16 +30,15 @@
 
 
 /*
- * The lower ZRAM_FLAG_SHIFT bits of table.flags is for
- * object size (excluding header), the higher bits is for
- * zram_pageflags.
+ * ZRAM is mainly used for memory efficiency so we want to keep memory
+ * footprint small and thus squeeze size and zram pageflags into a flags
+ * member. The lower ZRAM_FLAG_SHIFT bits is for object size (excluding
+ * header), which cannot be larger than PAGE_SIZE (requiring PAGE_SHIFT
+ * bits), the higher bits are for zram_pageflags.
  *
- * zram is mainly used for memory efficiency so we want to keep memory
- * footprint small so we can squeeze size and flags into a field.
- * The lower ZRAM_FLAG_SHIFT bits is for object size (excluding header),
- * the higher bits is for zram_pageflags.
+ * We use BUILD_BUG_ON() to make sure that zram pageflags don't overflow.
  */
-#define ZRAM_FLAG_SHIFT 24
+#define ZRAM_FLAG_SHIFT (PAGE_SHIFT + 1)
 
 /* Flags for zram pages (table[page_no].flags) */
 enum zram_pageflags {
@@ -51,11 +49,6 @@ enum zram_pageflags {
 	ZRAM_UNDER_WB,	/* page is under writeback */
 	ZRAM_HUGE,	/* Incompressible page */
 	ZRAM_IDLE,	/* not accessed page since last idle marking */
-	ZRAM_EXPIRE,
-	ZRAM_READ_BDEV,
-	ZRAM_PPR,
-	ZRAM_UNDER_PPR,
-	ZRAM_LRU,
 
 	__NR_ZRAM_PAGEFLAGS,
 };
@@ -71,9 +64,6 @@ struct zram_table_entry {
 	unsigned long flags;
 #ifdef CONFIG_ZRAM_MEMORY_TRACKING
 	ktime_t ac_time;
-#endif
-#ifdef CONFIG_ZRAM_LRU_WRITEBACK
-	struct list_head lru_list;
 #endif
 };
 
@@ -96,80 +86,7 @@ struct zram_stats {
 	atomic64_t bd_reads;		/* no. of reads from backing device */
 	atomic64_t bd_writes;		/* no. of writes from backing device */
 #endif
-#ifdef CONFIG_ZRAM_LRU_WRITEBACK
-	atomic64_t bd_expire;
-	atomic64_t bd_objcnt;
-	atomic64_t bd_size;
-	atomic64_t bd_max_count;
-	atomic64_t bd_max_size;
-	atomic64_t bd_ppr_count;
-	atomic64_t bd_ppr_reads;
-	atomic64_t bd_ppr_writes;
-	atomic64_t bd_ppr_objcnt;
-	atomic64_t bd_ppr_size;
-	atomic64_t bd_ppr_max_count;
-	atomic64_t bd_ppr_max_size;
-	atomic64_t bd_objreads;
-	atomic64_t bd_objwrites;
-	atomic64_t lru_pages;
-#endif
 };
-
-#ifdef CONFIG_ZRAM_LRU_WRITEBACK
-#define ZRAM_WB_THRESHOLD 32
-#define NR_ZWBS 64
-#define NR_FALLOC_PAGES 512
-#define FALLOC_ALIGN_MASK (~(NR_FALLOC_PAGES - 1))
-struct zram_wb_header {
-	u32 index;
-	u32 size;
-};
-
-struct zram_wb_work {
-	struct work_struct work;
-	struct page *src_page[NR_ZWBS];
-	struct page *dst_page;
-	struct bio *bio;
-	struct bio *bio_chain;
-	struct zram_writeback_buffer *buf;
-	struct zram *zram;
-	unsigned long handle;
-	int nr_pages;
-	bool ppr;
-};
-
-struct zram_wb_entry {
-	unsigned long index;
-	unsigned int offset;
-	unsigned int size;
-};
-
-struct zwbs {
-	struct zram_wb_entry entry[ZRAM_WB_THRESHOLD];
-	struct page *page;
-	u32 cnt;
-	u32 off;
-};
-
-struct zram_writeback_buffer {
-	struct zwbs *zwbs[NR_ZWBS];
-	int idx;
-};
-
-enum zram_entry_type {
-	ZRAM_WB_TYPE = 1,
-	ZRAM_WB_HUGE_TYPE,
-	ZRAM_SAME_TYPE,
-	ZRAM_HUGE_TYPE,
-};
-
-bool zram_is_app_launch(void);
-void zram_add_to_writeback_list(struct list_head *list, unsigned long index);
-int zram_writeback_list(struct list_head *list);
-void flush_writeback_buffer(struct list_head *list);
-int zram_get_entry_type(unsigned long index);
-int zram_prefetch_entry(unsigned long index);
-#endif
 
 struct zram {
 	struct zram_table_entry *table;
@@ -206,22 +123,6 @@ struct zram {
 #endif
 #ifdef CONFIG_ZRAM_MEMORY_TRACKING
 	struct dentry *debugfs_dir;
-#endif
-#ifdef CONFIG_ZRAM_LRU_WRITEBACK
-	struct task_struct *wbd;
-	wait_queue_head_t wbd_wait;
-	u8 *wb_table;
-	unsigned long *chunk_bitmap;
-	unsigned long nr_lru_pages;
-	bool wbd_running;
-	struct list_head list;
-	spinlock_t list_lock;
-	spinlock_t wb_table_lock;
-	spinlock_t bitmap_lock;
-	unsigned long *blk_bitmap;
-	struct mutex blk_bitmap_lock;
-	unsigned long *read_req_bitmap;
-	struct zram_writeback_buffer *buf;
 #endif
 };
 #endif

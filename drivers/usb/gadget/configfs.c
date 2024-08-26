@@ -15,6 +15,10 @@
 #include <linux/kdev_t.h>
 #include <linux/usb/ch9.h>
 
+#ifdef CONFIG_USB_F_NCM
+#include "function/u_ncm.h"
+#endif
+
 #ifdef CONFIG_USB_CONFIGFS_F_ACC
 extern int acc_ctrlrequest_composite(struct usb_composite_dev *cdev,
 				const struct usb_ctrlrequest *ctrl);
@@ -149,9 +153,12 @@ static int usb_string_copy(const char *s, char **s_copy)
 	int ret;
 	char *str;
 	char *copy = *s_copy;
+
 	ret = strlen(s);
 	if (ret > USB_MAX_STRING_LEN)
 		return -EOVERFLOW;
+	if (ret < 1)
+		return -EINVAL;
 
 	if (copy) {
 		str = copy;
@@ -1347,8 +1354,6 @@ static void purge_configs_funcs(struct gadget_info *gi)
 		list_for_each_entry_safe_reverse(f, tmp, &c->functions, list) {
 
 			list_move(&f->list, &cfg->func_list);
-			if (f->disable)
-				f->disable(f);
 			if (f->unbind) {
 				dev_dbg(&gi->cdev.gadget->dev,
 					"unbind function '%s'/%p\n",
@@ -1535,24 +1540,24 @@ static void android_work(struct work_struct *data)
 
 	if (status[0]) {
 		kobject_uevent_env(&gi->dev->kobj, KOBJ_CHANGE, connected);
-		pr_info("%s: sent uevent %s\n", __func__, connected[0]);
+		pr_debug("%s: sent uevent %s\n", __func__, connected[0]);
 		uevent_sent = true;
 	}
 
 	if (status[1]) {
 		kobject_uevent_env(&gi->dev->kobj, KOBJ_CHANGE, configured);
-		pr_info("%s: sent uevent %s\n", __func__, configured[0]);
+		pr_debug("%s: sent uevent %s\n", __func__, configured[0]);
 		uevent_sent = true;
 	}
 
 	if (status[2]) {
 		kobject_uevent_env(&gi->dev->kobj, KOBJ_CHANGE, disconnected);
-		pr_info("%s: sent uevent %s\n", __func__, disconnected[0]);
+		pr_debug("%s: sent uevent %s\n", __func__, disconnected[0]);
 		uevent_sent = true;
 	}
 
 	if (!uevent_sent) {
-		pr_info("%s: did not send uevent (%d %d %p)\n", __func__,
+		pr_debug("%s: did not send uevent (%d %d %p)\n", __func__,
 			gi->connected, gi->sw_connected, cdev->config);
 	}
 }
@@ -1609,6 +1614,20 @@ static int android_setup(struct usb_gadget *gadget,
 		}
 	}
 
+#ifdef CONFIG_USB_F_NCM
+	printk("android_setup: ctrlrequest->bRequestType=%d, bRequest=%d, value=%d\n", c->bRequestType, c->bRequest, value);
+	if (value < 0)
+		value = ncm_ctrlrequest(cdev, c);
+
+	/*
+	* for mirror link command case, if it already been handled,
+	* do not pass to composite_setup
+	*/
+	if (value == 0) {
+		return value;
+	}
+#endif
+
 #ifdef CONFIG_USB_CONFIGFS_F_ACC
 	if (value < 0)
 		value = acc_ctrlrequest_composite(cdev, c);
@@ -1620,7 +1639,10 @@ static int android_setup(struct usb_gadget *gadget,
 	spin_lock_irqsave(&cdev->lock, flags);
 	if (c->bRequest == USB_REQ_SET_CONFIGURATION &&
 						cdev->config) {
-		schedule_work(&gi->work);
+		// avoid 21.09(HID_REQ_SET_REPORT) trigger this
+		if ((c->bRequestType & USB_TYPE_MASK) == USB_TYPE_STANDARD) {
+			schedule_work(&gi->work);
+		}
 	}
 	spin_unlock_irqrestore(&cdev->lock, flags);
 

@@ -28,7 +28,9 @@ thermal_sys-$(CONFIG_CLOCK_THERMAL)	+= clock_cooling.o
 thermal_sys-$(CONFIG_DEVFREQ_THERMAL) += devfreq_cooling.o
 
 # debugfs support
-thermal_sys-$(CONFIG_QTI_THERMAL) += thermal_debugfs.o
+ifeq ($(CONFIG_QTI_THERMAL),y)
+thermal_sys-$(CONFIG_DEBUG_FS) += thermal_debugfs.o
+endif
 
 # platform thermal drivers
 obj-y				+= broadcom/
@@ -60,4 +62,3 @@ obj-$(CONFIG_UNIPHIER_THERMAL)	+= uniphier_thermal.o
 obj-$(CONFIG_THERMAL_TSENS)     += msm-tsens-driver.o
 msm-tsens-driver-objs     := msm-tsens.o tsens2xxx.o tsens-dbg.o tsens-mtc.o tsens1xxx.o tsens-calib.o
 obj-$(CONFIG_SPRD_THERMAL)	+= sprd_thermal.o
-obj-$(CONFIG_SEC_THERMAL_LOG)	+= ss_thermal_log.o

@@ -350,6 +350,11 @@ struct uvc_entity {
 	u8 bNrInPins;
 	u8 *baSourceID;
 
+	int (*get_info)(struct uvc_device *dev, struct uvc_entity *entity,
+			u8 cs, u8 *caps);
+	int (*get_cur)(struct uvc_device *dev, struct uvc_entity *entity,
+		       u8 cs, void *data, u16 size);
+
 	unsigned int ncontrols;
 	struct uvc_control *controls;
 };
@@ -873,10 +878,17 @@ void uvc_video_decode_isight(struct uvc_urb *uvc_urb,
 			     struct uvc_buffer *meta_buf);
 
 /* debugfs and statistics */
+#ifdef CONFIG_DEBUG_FS
 void uvc_debugfs_init(void);
 void uvc_debugfs_cleanup(void);
 void uvc_debugfs_init_stream(struct uvc_streaming *stream);
 void uvc_debugfs_cleanup_stream(struct uvc_streaming *stream);
+#else
+static inline void uvc_debugfs_init(void) { return; };
+static inline void uvc_debugfs_cleanup(void) { };
+static inline void uvc_debugfs_init_stream(struct uvc_streaming *stream) { return; };
+static inline void uvc_debugfs_cleanup_stream(struct uvc_streaming *stream) { };
+#endif
 
 size_t uvc_video_stats_dump(struct uvc_streaming *stream, char *buf,
 			    size_t size);

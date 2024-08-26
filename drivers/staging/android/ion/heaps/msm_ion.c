@@ -4,7 +4,6 @@
  */
 
 #include <linux/err.h>
-#include <linux/debugfs.h>
 #include <linux/file.h>
 #include <linux/io.h>
 #include <linux/platform_device.h>
@@ -70,10 +69,6 @@ static struct ion_heap_desc ion_heap_meta[] = {
 		.name	= ION_SPSS_HEAP_NAME,
 	},
 	{
-		.id     = ION_CAMERA_HEAP_ID,
-		.name   = ION_CAMERA_HEAP_NAME,
-	},
-	{
 		.id	= ION_ADSP_HEAP_ID,
 		.name	= ION_ADSP_HEAP_NAME,
 	},
@@ -122,59 +117,10 @@ static struct heap_types_info {
 	MAKE_HEAP_TYPE_MAPPING(HYP_CMA),
 };
 
-static int msm_ion_debug_heap_show(struct seq_file *s, void *unused)
-{
-	struct msm_ion_heap *msm_heap = s->private;
-
-	if (msm_heap && msm_heap->msm_heap_ops &&
-	    msm_heap->msm_heap_ops->debug_show)
-		msm_heap->msm_heap_ops->debug_show(&msm_heap->ion_heap, s,
-						   unused);
-
-	return 0;
-}
-
-static int msm_ion_debug_heap_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, msm_ion_debug_heap_show, inode->i_private);
-}
-
-static const struct file_operations msm_ion_debug_heap_fops = {
-	.open = msm_ion_debug_heap_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
-static void msm_ion_debugfs_create_file(struct msm_ion_heap *msm_heap)
-{
-	char debug_name[64];
-	struct dentry *debugfs_root;
-	struct ion_heap *heap;
-
-	if (msm_heap && msm_heap->msm_heap_ops &&
-	    msm_heap->msm_heap_ops->debug_show &&
-	    msm_heap->ion_heap.debugfs_dir) {
-		heap = &msm_heap->ion_heap;
-		debugfs_root = heap->debugfs_dir;
-		scnprintf(debug_name, 64, "%s_stats", heap->name);
-		if (!debugfs_create_file(debug_name, 0664, debugfs_root,
-					 msm_heap, &msm_ion_debug_heap_fops))
-			dev_err(msm_heap->dev,
-				"Failed to create %s debugfs entry\n",
-				debug_name);
-	}
-}
-
 static struct ion_heap *ion_heap_create(struct ion_platform_heap *heap_data)
 {
 	struct ion_heap *heap = NULL;
 	int heap_type = heap_data->type;
-
-#ifndef CONFIG_QGKI
-	if (heap_data->id == ION_CAMERA_HEAP_ID)
-		return ERR_PTR(-EINVAL);
-#endif
 
 	switch (heap_type) {
 	case ION_HEAP_TYPE_MSM_SYSTEM:
@@ -629,7 +575,6 @@ static int msm_ion_probe(struct platform_device *pdev)
 		}
 
 		ion_device_add_heap(heaps[i]);
-		msm_ion_debugfs_create_file(to_msm_ion_heap(heaps[i]));
 	}
 	free_pdata(pdata);
 
@@ -658,6 +603,7 @@ static struct platform_driver msm_ion_driver = {
 	.driver = {
 		.name = "ion-msm",
 		.of_match_table = msm_ion_match_table,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 };
 

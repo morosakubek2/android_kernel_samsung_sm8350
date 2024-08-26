@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2011-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/debugfs.h>
@@ -21,20 +22,19 @@ static inline void signal_event(struct kgsl_device *device,
 {
 	list_del(&event->node);
 	event->result = result;
-	queue_work(device->events_wq, &event->work);
+	kthread_queue_work(device->events_worker, &event->work);
 }
 
 /**
  * _kgsl_event_worker() - Work handler for processing GPU event callbacks
- * @work: Pointer to the work_struct for the event
+ * @work: Pointer to the kthread_work for the event
  *
- * Each event callback has its own work struct and is run on a event specific
- * workqeuue.  This is the worker that queues up the event callback function.
+ * Each event callback has its own kthread_work struct and is run on a event specific
+ * worker thread.  This is the worker that queues up the event callback function.
  */
-static void _kgsl_event_worker(struct work_struct *work)
+static void _kgsl_event_worker(struct kthread_work *work)
 {
 	struct kgsl_event *event = container_of(work, struct kgsl_event, work);
-	int id = KGSL_CONTEXT_ID(event->context);
 
 	trace_kgsl_fire_event(id, event->timestamp, event->result,
 		jiffies - event->created, event->func);
@@ -185,8 +185,10 @@ void kgsl_cancel_event(struct kgsl_device *device,
 
 	list_for_each_entry_safe(event, tmp, &group->events, node) {
 		if (timestamp == event->timestamp && func == event->func &&
-			event->priv == priv)
+			event->priv == priv) {
 			signal_event(device, event, KGSL_EVENT_CANCELLED);
+			break;
+		}
 	}
 
 	spin_unlock(&group->lock);
@@ -257,8 +259,6 @@ int kgsl_add_event(struct kgsl_device *device, struct kgsl_event_group *group,
 	/* Get a reference to the context while the event is active */
 	if (context != NULL && !_kgsl_context_get(context)) {
 		kmem_cache_free(events_cache, event);
-		dev_err(device->dev,
-			"return -ENOENT at <%s: %d>", __FILE__, __LINE__);
 		return -ENOENT;
 	}
 
@@ -270,7 +270,7 @@ int kgsl_add_event(struct kgsl_device *device, struct kgsl_event_group *group,
 	event->created = jiffies;
 	event->group = group;
 
-	INIT_WORK(&event->work, _kgsl_event_worker);
+	kthread_init_work(&event->work, _kgsl_event_worker);
 
 	trace_kgsl_register_event(KGSL_CONTEXT_ID(context), timestamp, func);
 
@@ -285,7 +285,7 @@ int kgsl_add_event(struct kgsl_device *device, struct kgsl_event_group *group,
 
 	if (timestamp_cmp(retired, timestamp) >= 0) {
 		event->result = KGSL_EVENT_RETIRED;
-		queue_work(device->events_wq, &event->work);
+		kthread_queue_work(device->events_worker, &event->work);
 		spin_unlock(&group->lock);
 		return 0;
 	}

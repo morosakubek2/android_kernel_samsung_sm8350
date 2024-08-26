@@ -58,8 +58,8 @@ config OVERRIDE_MEMORY_LIMIT
 	  If unsure, say N
 
 config QCOM_MEM_BUF
-	bool "Qualcomm Technologies, Inc. Memory Buffer Sharing Driver"
-	depends on HH_MSGQ && HH_RM_DRV && ION_MSM_HEAPS
+	tristate "Qualcomm Technologies, Inc. Memory Buffer Sharing Driver"
+	depends on HH_MSGQ && HH_RM_DRV
 	help
 	  Add support for lending memory from one virtual machine to another.
 	  This driver communicates with the hypervisor, as well as other
@@ -537,6 +537,7 @@ config MSM_L2_SPM
 
 config QCOM_MEMORY_DUMP_V2
 	tristate "QCOM Memory Dump V2 Support"
+	default n
 	help
 	  This enables memory dump feature. It allows various client
 	  subsystems to register respective dump regions. At the time
@@ -600,6 +601,7 @@ config QCOM_DCC_V2
 config QCOM_MINIDUMP
 	tristate "QCOM Minidump Support"
 	depends on QCOM_SMEM && POWER_RESET_MSM
+	default n
 	help
 	  This enables minidump feature. It allows various clients to
 	  register to dump their state at system bad state (panic/WDT,etc.,).
@@ -659,6 +661,7 @@ config QCOM_MICRODUMP
 	tristate "Qualcomm Technologies, Inc. Microdump Support"
 	depends on MSM_SUBSYSTEM_RESTART
 	depends on QCOM_SMEM
+	default n
 	help
 	  This enables microdump feature. It collects
 	  crash data from SMEM whenever modem subsytem
@@ -727,15 +730,6 @@ config MSM_PERFORMANCE_QGKI
 config QMP_DEBUGFS_CLIENT
 	bool "Debugfs Client to communicate with AOP using QMP protocol"
 	depends on DEBUG_FS
-	help
-	  This options enables a driver which allows clients to send messages
-	  to Alway On processor using QMP transport. Users can echo a message
-	  into an exposed debugfs node to send to AOP. The driver expects the
-	  passed in string argument to be formatted correctly for AOP to read.
-
-config QMP_SYSFS_CLIENT
-	bool "Sysfs Client to communicate with AOP using QMP protocol"
-	default n
 	help
 	  This options enables a driver which allows clients to send messages
 	  to Alway On processor using QMP transport. Users can echo a message
@@ -1014,7 +1008,7 @@ config QTI_DDR_STATS_LOG
 
 config QTI_SYS_PM_VX
 	tristate "Qualcomm Technologies Inc (QTI) System PM Violators Driver"
-	depends on QMP_DEBUGFS_CLIENT || SEC_PM
+	depends on QMP_DEBUGFS_CLIENT
 	help
 	  This option enables debug subystems that prevent system low power
 	  modes. The user sends a QMP message to AOP to record subsystems
@@ -1151,8 +1145,8 @@ config QCOM_WDOG_BITE_EARLY_PANIC
 config QCOM_WATCHDOG_BARK_TIME
 	depends on QCOM_WDT_CORE
 	int "Qualcomm Technologies, Inc. Watchdog bark time in ms"
-	default 14000
-	range 14000 14000
+	default 11000
+	range 11000 11000
 	help
 	  The amount of time, in milliseconds, that should elapse after
 	  a watchdog timer reset before a bark interrupt is sent from the
@@ -1376,35 +1370,7 @@ config SDX_EXT_IPC
 
       If unsure, say N.
 
-config SUPPORT_SSC_SPU
-	bool "Support SSC(SLPI) SPU(System Parameter update)"
-	help
-	  Add support for SSC SPU.
-
-config SUPPORT_SLPI_SLEEP_DEBUG
-	bool "Support SSC(SLPI) Sleep debug"
-	default n
-	help
-	  Say 'Y' here to change sleep issue detect condition for SLPI
-
 source "drivers/soc/qcom/icnss2/Kconfig"
 
 source "drivers/soc/qcom/gnsssirf/Kconfig"
-
-config DSP_SLEEP_RECOVERY
-	tristate "DSP_SLEEP_RECOVERY"
-	help
-	  Say 'Y' here to enable SSR when DSP(ADSP/CDSP) fail to enter sleep.
-
-config DSP_SLEEP_DEBUG
-	tristate "DSP_SLEEP_DEBUG"
-	help
-	  Say 'Y' here to change sleep issue detect condition to 24hours and 5th count
-
-config SEC_CDSP_NO_CRASH_FOR_ENG
-	bool "crash only trigger on USER/USERDEBUG except ENG"
-	default n
-	help
-	  This option provides crash only except ENG Binary.
-
 endmenu
