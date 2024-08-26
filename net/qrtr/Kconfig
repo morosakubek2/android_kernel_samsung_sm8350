@@ -77,7 +77,4 @@ config QRTR_MHI_DEV
 	  connections.  This driver enables QRTR to run on the modem device
 	  side.
 
-config QRTR_WS_DEBUG
-	tristate "Wake Source debugging tool"
-
 endif # QRTR

@@ -181,7 +181,7 @@ config NET_IPGRE_DEMUX
 	tristate "IP: GRE demultiplexer"
 	help
 	 This is helper module to demultiplex GRE packets on GRE version field criteria.
-	 Required by ip_gre and pptp modules.
+	 Required by ip_gre, pptp and eoip modules.
 
 config NET_IP_TUNNEL
 	tristate
@@ -212,6 +212,17 @@ config NET_IPGRE_BROADCAST
 	  Network), which looks like a normal Ethernet LAN (Local Area
 	  Network), but can be distributed all over the Internet. If you want
 	  to do that, say Y here and to "IP multicast routing" below.
+
+config NET_EOIP
+	tristate "IP: EOIP ethernet tunnels over IP"
+	depends on (IPV6 || IPV6=n) && NET_IPGRE_DEMUX
+	help
+	  Tunneling means encapsulating data of one protocol type within
+	  another protocol and sending it over a channel that understands the
+	  encapsulating protocol. This particular tunneling driver implements
+	  MikroTik RouterOS compatible encapsulation of ethernet frames over
+	  existing IPv4 infrastructure. It is useful if the other endpoint
+	  is a MikroTik router.
 
 config IP_MROUTE_COMMON
 	bool
@@ -468,7 +479,6 @@ if TCP_CONG_ADVANCED
 
 config TCP_CONG_BIC
 	tristate "Binary Increase Congestion (BIC) control"
-	default m
 	---help---
 	BIC-TCP is a sender-side only change that ensures a linear RTT
 	fairness under large windows while offering both scalability and
@@ -482,7 +492,7 @@ config TCP_CONG_BIC
 
 config TCP_CONG_CUBIC
 	tristate "CUBIC TCP"
-	default y
+	default n
 	---help---
 	This is version 2.0 of BIC-TCP which uses a cubic growth function
 	among other techniques.
@@ -490,7 +500,6 @@ config TCP_CONG_CUBIC
 
 config TCP_CONG_WESTWOOD
 	tristate "TCP Westwood+"
-	default m
 	---help---
 	TCP Westwood+ is a sender-side only modification of the TCP Reno
 	protocol stack that optimizes the performance of TCP congestion
@@ -504,7 +513,6 @@ config TCP_CONG_WESTWOOD
 
 config TCP_CONG_HTCP
 	tristate "H-TCP"
-	default m
 	---help---
 	H-TCP is a send-side only modifications of the TCP Reno
 	protocol stack that optimizes the performance of TCP
@@ -665,9 +673,35 @@ config TCP_CONG_BBR
 	bufferbloat, policers, or AQM schemes that do not provide a delay
 	signal. It requires the fq ("Fair Queue") pacing packet scheduler.
 
+config TCP_CONG_BBRPLUS
+        tristate "BBRPLUS TCP"
+        ---help---
+
+        BBRplus is an enhanced version of BBR (Bottleneck Bandwidth and RTT).
+        Originally introduced by dog250 & cx9208.
+        Same as BBR, requires the fq ("Fair Queue") pacing packet scheduler.
+
+config TCP_CONG_BBR2
+	tristate "BBR2 TCP"
+	default y
+	---help---
+
+	BBR2 TCP congestion control is a model-based congestion control
+	algorithm that aims to maximize network utilization, keep queues and
+	retransmit rates low, and to be able to coexist with Reno/CUBIC in
+	common scenarios. It builds an explicit model of the network path.  It
+	tolerates a targeted degree of random packet loss and delay that are
+	unrelated to congestion. It can operate over LAN, WAN, cellular, wifi,
+	or cable modem links, and can use DCTCP-L4S-style ECN signals.  It can
+	coexist with flows that use loss-based congestion control, and can
+	operate with shallow buffers, deep buffers, bufferbloat, policers, or
+	AQM schemes that do not provide a delay signal. It requires pacing,
+	using either TCP internal pacing or the fq ("Fair Queue") pacing packet
+	scheduler.
+
 choice
 	prompt "Default TCP congestion control"
-	default DEFAULT_CUBIC
+	default DEFAULT_BBRPLUS
 	help
 	  Select the TCP congestion control that will be used by default
 	  for all connections.
@@ -702,6 +736,12 @@ choice
 	config DEFAULT_BBR
 		bool "BBR" if TCP_CONG_BBR=y
 
+        config DEFAULT_BBRPLUS
+                bool "BBRPLUS" if TCP_CONG_BBRPLUS=y
+
+	config DEFAULT_BBR2
+		bool "BBR2" if TCP_CONG_BBR2=y
+
 	config DEFAULT_RENO
 		bool "Reno"
 endchoice
@@ -726,7 +766,9 @@ config DEFAULT_TCP_CONG
 	default "dctcp" if DEFAULT_DCTCP
 	default "cdg" if DEFAULT_CDG
 	default "bbr" if DEFAULT_BBR
-	default "cubic"
+	default "bbr2" if DEFAULT_BBR2
+    default "bbrplus" if DEFAULT_BBRPLUS
+	default "bbrplus"
 
 config TCP_MD5SIG
 	bool "TCP: MD5 Signature Option support (RFC2385)"

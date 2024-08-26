@@ -143,6 +143,7 @@ static const char *const comments[] = {
 	[NF_IP_TRACE_COMMENT_POLICY]	= "policy",
 };
 
+#ifdef CONFIG_DEBUG_KERNEL
 static const struct nf_loginfo trace_loginfo = {
 	.type = NF_LOG_TYPE_LOG,
 	.u = {
@@ -152,6 +153,7 @@ static const struct nf_loginfo trace_loginfo = {
 		},
 	},
 };
+#endif
 
 /* Mildly perf critical (only if packet tracing is on) */
 static inline int
@@ -208,9 +210,11 @@ static void trace_packet(struct net *net,
 		    &chainname, &comment, &rulenum) != 0)
 			break;
 
+#ifdef CONFIG_DEBUG_KERNEL
 	nf_log_trace(net, AF_INET, hook, skb, in, out, &trace_loginfo,
 		     "TRACE: %s:%s:%s:%u ",
 		     tablename, chainname, comment, rulenum);
+#endif
 }
 #endif
 
@@ -1076,6 +1080,8 @@ __do_replace(struct net *net, const char *name, unsigned int valid_hooks,
 	    (newinfo->number <= oldinfo->initial_entries))
 		module_put(t->me);
 
+	xt_table_unlock(t);
+
 	get_old_counters(oldinfo, counters);
 
 	/* Decrease module usage counts and free resource */
@@ -1089,7 +1095,6 @@ __do_replace(struct net *net, const char *name, unsigned int valid_hooks,
 		net_warn_ratelimited("iptables: counters copy to user failed while replacing table\n");
 	}
 	vfree(counters);
-	xt_table_unlock(t);
 	return ret;
 
  put_module:
