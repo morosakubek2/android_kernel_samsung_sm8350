@@ -40,15 +40,15 @@
 #include <linux/init_task.h>
 #include <linux/uaccess.h>
 
-#ifdef CONFIG_FSCRYPT_SDP
-#include <linux/fscrypto_sdp_name.h>
-#endif
-
 #include "internal.h"
 #include "mount.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/namei.h>
+
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#endif
 
 /* [Feb-1997 T. Schoebel-Theuer]
  * Fundamental changes in the pathname lookup mechanisms (namei)
@@ -59,8 +59,8 @@
  * The new code replaces the old recursive symlink resolution with
  * an iterative one (in case of non-nested symlink chains).  It does
  * this with calls to <fs>_follow_link().
- * As a side effect, dir_namei(), _namei() and follow_link() are now 
- * replaced with a single function lookup_dentry() that can handle all 
+ * As a side effect, dir_namei(), _namei() and follow_link() are now
+ * replaced with a single function lookup_dentry() that can handle all
  * the special cases of the former code.
  *
  * With the new dcache, the pathname is stored at each inode, at least as
@@ -1202,21 +1202,13 @@ int follow_up(struct path *path)
 		read_sequnlock_excl(&mount_lock);
 		return 0;
 	}
-#ifdef CONFIG_FASTUH_KDP
-	mntget(((struct kdp_mount *)parent)->mnt);
-#else
 	mntget(&parent->mnt);
-#endif
 	mountpoint = dget(mnt->mnt_mountpoint);
 	read_sequnlock_excl(&mount_lock);
 	dput(path->dentry);
 	path->dentry = mountpoint;
 	mntput(path->mnt);
-#ifdef CONFIG_FASTUH_KDP
-	path->mnt = ((struct kdp_mount *)parent)->mnt;
-#else
 	path->mnt = &parent->mnt;
-#endif
 	return 1;
 }
 EXPORT_SYMBOL(follow_up);
@@ -1422,13 +1414,8 @@ static bool __follow_mount_rcu(struct nameidata *nd, struct path *path,
 		mounted = __lookup_mnt(path->mnt, path->dentry);
 		if (!mounted)
 			break;
-#ifdef CONFIG_FASTUH_KDP
-		path->mnt = ((struct kdp_mount *)mounted)->mnt;
-		path->dentry = ((struct kdp_mount *)mounted)->mnt->mnt_root;
-#else
 		path->mnt = &mounted->mnt;
 		path->dentry = mounted->mnt.mnt_root;
-#endif
 		nd->flags |= LOOKUP_JUMPED;
 		*seqp = read_seqcount_begin(&path->dentry->d_seq);
 		/*
@@ -1471,19 +1458,11 @@ static int follow_dotdot_rcu(struct nameidata *nd)
 			unsigned seq = read_seqcount_begin(&mountpoint->d_seq);
 			if (unlikely(read_seqretry(&mount_lock, nd->m_seq)))
 				return -ECHILD;
-#ifdef CONFIG_FASTUH_KDP
-			if (((struct kdp_mount *)mparent)->mnt == nd->path.mnt)
-#else
 			if (&mparent->mnt == nd->path.mnt)
-#endif
 				break;
 			/* we know that mountpoint was pinned */
 			nd->path.dentry = mountpoint;
-#ifdef CONFIG_FASTUH_KDP
-			nd->path.mnt = ((struct kdp_mount *)mparent)->mnt;
-#else
 			nd->path.mnt = &mparent->mnt;
-#endif
 			inode = inode2;
 			nd->seq = seq;
 		}
@@ -1495,13 +1474,8 @@ static int follow_dotdot_rcu(struct nameidata *nd)
 			return -ECHILD;
 		if (!mounted)
 			break;
-#ifdef CONFIG_FASTUH_KDP
-		nd->path.mnt = ((struct kdp_mount *)mounted)->mnt;
-		nd->path.dentry = ((struct kdp_mount *)mounted)->mnt->mnt_root;
-#else
 		nd->path.mnt = &mounted->mnt;
 		nd->path.dentry = mounted->mnt.mnt_root;
-#endif
 		inode = nd->path.dentry->d_inode;
 		nd->seq = read_seqcount_begin(&nd->path.dentry->d_seq);
 	}
@@ -2429,6 +2403,10 @@ static int path_lookupat(struct nameidata *nd, unsigned flags, struct path *path
 	if (!err && nd->flags & LOOKUP_DIRECTORY)
 		if (!d_can_lookup(nd->path.dentry))
 			err = -ENOTDIR;
+	if (!err && unlikely(nd->flags & LOOKUP_MOUNTPOINT)) {
+		err = handle_lookup_down(nd);
+		nd->flags &= ~LOOKUP_JUMPED; // no d_weak_revalidate(), please...
+	}
 	if (!err) {
 		*path = nd->path;
 		nd->path.mnt = NULL;
@@ -2457,7 +2435,8 @@ int filename_lookup(int dfd, struct filename *name, unsigned flags,
 		retval = path_lookupat(&nd, flags | LOOKUP_REVAL, path);
 
 	if (likely(!retval))
-		audit_inode(name, path->dentry, 0);
+		audit_inode(name, path->dentry,
+			    flags & LOOKUP_MOUNTPOINT ? AUDIT_INODE_NOEVAL : 0);
 	restore_nameidata();
 	putname(name);
 	return retval;
@@ -2735,151 +2714,6 @@ int user_path_at_empty(int dfd, const char __user *name, unsigned flags,
 }
 EXPORT_SYMBOL(user_path_at_empty);
 
-/**
- * mountpoint_last - look up last component for umount
- * @nd:   pathwalk nameidata - currently pointing at parent directory of "last"
- *
- * This is a special lookup_last function just for umount. In this case, we
- * need to resolve the path without doing any revalidation.
- *
- * The nameidata should be the result of doing a LOOKUP_PARENT pathwalk. Since
- * mountpoints are always pinned in the dcache, their ancestors are too. Thus,
- * in almost all cases, this lookup will be served out of the dcache. The only
- * cases where it won't are if nd->last refers to a symlink or the path is
- * bogus and it doesn't exist.
- *
- * Returns:
- * -error: if there was an error during lookup. This includes -ENOENT if the
- *         lookup found a negative dentry.
- *
- * 0:      if we successfully resolved nd->last and found it to not to be a
- *         symlink that needs to be followed.
- *
- * 1:      if we successfully resolved nd->last and found it to be a symlink
- *         that needs to be followed.
- */
-static int
-mountpoint_last(struct nameidata *nd)
-{
-	int error = 0;
-	struct dentry *dir = nd->path.dentry;
-	struct path path;
-
-	/* If we're in rcuwalk, drop out of it to handle last component */
-	if (nd->flags & LOOKUP_RCU) {
-		if (unlazy_walk(nd))
-			return -ECHILD;
-	}
-
-	nd->flags &= ~LOOKUP_PARENT;
-
-	if (unlikely(nd->last_type != LAST_NORM)) {
-		error = handle_dots(nd, nd->last_type);
-		if (error)
-			return error;
-		path.dentry = dget(nd->path.dentry);
-	} else {
-		path.dentry = d_lookup(dir, &nd->last);
-		if (!path.dentry) {
-			/*
-			 * No cached dentry. Mounted dentries are pinned in the
-			 * cache, so that means that this dentry is probably
-			 * a symlink or the path doesn't actually point
-			 * to a mounted dentry.
-			 */
-			path.dentry = lookup_slow(&nd->last, dir,
-					     nd->flags | LOOKUP_NO_REVAL);
-			if (IS_ERR(path.dentry))
-				return PTR_ERR(path.dentry);
-		}
-	}
-	if (d_is_negative(path.dentry)) {
-		dput(path.dentry);
-		return -ENOENT;
-	}
-	path.mnt = nd->path.mnt;
-	return step_into(nd, &path, 0, d_backing_inode(path.dentry), 0);
-}
-
-/**
- * path_mountpoint - look up a path to be umounted
- * @nd:		lookup context
- * @flags:	lookup flags
- * @path:	pointer to container for result
- *
- * Look up the given name, but don't attempt to revalidate the last component.
- * Returns 0 and "path" will be valid on success; Returns error otherwise.
- */
-static int
-path_mountpoint(struct nameidata *nd, unsigned flags, struct path *path)
-{
-	const char *s = path_init(nd, flags);
-	int err;
-
-	while (!(err = link_path_walk(s, nd)) &&
-		(err = mountpoint_last(nd)) > 0) {
-		s = trailing_symlink(nd);
-	}
-	if (!err) {
-		*path = nd->path;
-		nd->path.mnt = NULL;
-		nd->path.dentry = NULL;
-		follow_mount(path);
-	}
-	terminate_walk(nd);
-	return err;
-}
-
-static int
-filename_mountpoint(int dfd, struct filename *name, struct path *path,
-			unsigned int flags)
-{
-	struct nameidata nd;
-	int error;
-	if (IS_ERR(name))
-		return PTR_ERR(name);
-	set_nameidata(&nd, dfd, name);
-	error = path_mountpoint(&nd, flags | LOOKUP_RCU, path);
-	if (unlikely(error == -ECHILD))
-		error = path_mountpoint(&nd, flags, path);
-	if (unlikely(error == -ESTALE))
-		error = path_mountpoint(&nd, flags | LOOKUP_REVAL, path);
-	if (likely(!error))
-		audit_inode(name, path->dentry, AUDIT_INODE_NOEVAL);
-	restore_nameidata();
-	putname(name);
-	return error;
-}
-
-/**
- * user_path_mountpoint_at - lookup a path from userland in order to umount it
- * @dfd:	directory file descriptor
- * @name:	pathname from userland
- * @flags:	lookup flags
- * @path:	pointer to container to hold result
- *
- * A umount is a special case for path walking. We're not actually interested
- * in the inode in this situation, and ESTALE errors can be a problem. We
- * simply want track down the dentry and vfsmount attached at the mountpoint
- * and avoid revalidating the last component.
- *
- * Returns 0 and populates "path" on success.
- */
-int
-user_path_mountpoint_at(int dfd, const char __user *name, unsigned int flags,
-			struct path *path)
-{
-	return filename_mountpoint(dfd, getname(name), path, flags);
-}
-
-int
-kern_path_mountpoint(int dfd, const char *name, struct path *path,
-			unsigned int flags)
-{
-	return filename_mountpoint(dfd, getname_kernel(name), path, flags);
-}
-EXPORT_SYMBOL(kern_path_mountpoint);
-
 int __check_sticky(struct inode *dir, struct inode *inode)
 {
 	kuid_t fsuid = current_fsuid();
@@ -2993,20 +2827,14 @@ struct dentry *lock_rename(struct dentry *p1, struct dentry *p2)
 	p = d_ancestor(p2, p1);
 	if (p) {
 		inode_lock_nested(p2->d_inode, I_MUTEX_PARENT);
-		inode_lock_nested(p1->d_inode, I_MUTEX_CHILD);
+		inode_lock_nested(p1->d_inode, I_MUTEX_PARENT2);
 		return p;
 	}
 
 	p = d_ancestor(p1, p2);
-	if (p) {
-		inode_lock_nested(p1->d_inode, I_MUTEX_PARENT);
-		inode_lock_nested(p2->d_inode, I_MUTEX_CHILD);
-		return p;
-	}
-
-	lock_two_inodes(p1->d_inode, p2->d_inode,
-			I_MUTEX_PARENT, I_MUTEX_PARENT2);
-	return NULL;
+	inode_lock_nested(p1->d_inode, I_MUTEX_PARENT);
+	inode_lock_nested(p2->d_inode, I_MUTEX_PARENT2);
+	return p;
 }
 EXPORT_SYMBOL(lock_rename);
 
@@ -3020,6 +2848,63 @@ void unlock_rename(struct dentry *p1, struct dentry *p2)
 }
 EXPORT_SYMBOL(unlock_rename);
 
+/**
+ * mode_strip_umask - handle vfs umask stripping
+ * @dir:	parent directory of the new inode
+ * @mode:	mode of the new inode to be created in @dir
+ *
+ * Umask stripping depends on whether or not the filesystem supports POSIX
+ * ACLs. If the filesystem doesn't support it umask stripping is done directly
+ * in here. If the filesystem does support POSIX ACLs umask stripping is
+ * deferred until the filesystem calls posix_acl_create().
+ *
+ * Returns: mode
+ */
+static inline umode_t mode_strip_umask(const struct inode *dir, umode_t mode)
+{
+	if (!IS_POSIXACL(dir))
+		mode &= ~current_umask();
+	return mode;
+}
+
+/**
+ * vfs_prepare_mode - prepare the mode to be used for a new inode
+ * @dir:	parent directory of the new inode
+ * @mode:	mode of the new inode
+ * @mask_perms:	allowed permission by the vfs
+ * @type:	type of file to be created
+ *
+ * This helper consolidates and enforces vfs restrictions on the @mode of a new
+ * object to be created.
+ *
+ * Umask stripping depends on whether the filesystem supports POSIX ACLs (see
+ * the kernel documentation for mode_strip_umask()). Moving umask stripping
+ * after setgid stripping allows the same ordering for both non-POSIX ACL and
+ * POSIX ACL supporting filesystems.
+ *
+ * Note that it's currently valid for @type to be 0 if a directory is created.
+ * Filesystems raise that flag individually and we need to check whether each
+ * filesystem can deal with receiving S_IFDIR from the vfs before we enforce a
+ * non-zero type.
+ *
+ * Returns: mode to be passed to the filesystem
+ */
+static inline umode_t vfs_prepare_mode(const struct inode *dir, umode_t mode,
+				       umode_t mask_perms, umode_t type)
+{
+	mode = mode_strip_sgid(dir, mode);
+	mode = mode_strip_umask(dir, mode);
+
+	/*
+	 * Apply the vfs mandated allowed permission mask and set the type of
+	 * file to be created before we call into the filesystem.
+	 */
+	mode &= (mask_perms & ~S_IFMT);
+	mode |= (type & S_IFMT);
+
+	return mode;
+}
+
 int vfs_create(struct inode *dir, struct dentry *dentry, umode_t mode,
 		bool want_excl)
 {
@@ -3029,8 +2914,8 @@ int vfs_create(struct inode *dir, struct dentry *dentry, umode_t mode,
 
 	if (!dir->i_op->create)
 		return -EACCES;	/* shouldn't it be ENOSYS? */
-	mode &= S_IALLUGO;
-	mode |= S_IFREG;
+
+	mode = vfs_prepare_mode(dir, mode, S_IALLUGO, S_IFREG);
 	error = security_inode_create(dir, dentry, mode);
 	if (error)
 		return error;
@@ -3300,8 +3185,7 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 	 * O_EXCL open we want to return EEXIST not EROFS).
 	 */
 	if (open_flag & O_CREAT) {
-		if (!IS_POSIXACL(dir->d_inode))
-			mode &= ~current_umask();
+		mode = vfs_prepare_mode(dir->d_inode, mode, mode, mode);
 		if (unlikely(!got_write)) {
 			create_error = -EROFS;
 			open_flag &= ~O_CREAT;
@@ -3577,8 +3461,7 @@ struct dentry *vfs_tmpfile(struct dentry *dentry, umode_t mode, int open_flag)
 	child = d_alloc(dentry, &slash_name);
 	if (unlikely(!child))
 		goto out_err;
-	if (!IS_POSIXACL(dir))
-		mode &= ~current_umask();
+	mode = vfs_prepare_mode(dir, mode, mode, mode);
 	error = dir->i_op->tmpfile(dir, child, mode);
 	if (error)
 		goto out_err;
@@ -3689,6 +3572,13 @@ struct file *do_filp_open(int dfd, struct filename *pathname,
 	struct nameidata nd;
 	int flags = op->lookup_flags;
 	struct file *filp;
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	int error;
+	if (susfs_sus_path_by_filename(pathname, &error, SYSCALL_FAMILY_ALL_ENOENT)) {
+		return ERR_PTR(error);
+	}
+#endif
 
 	set_nameidata(&nd, dfd, pathname);
 	filp = path_openat(&nd, op, flags | LOOKUP_RCU);
@@ -3837,6 +3727,7 @@ int vfs_mknod(struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
 	if (!dir->i_op->mknod)
 		return -EPERM;
 
+	mode = vfs_prepare_mode(dir, mode, mode, mode);
 	error = devcgroup_inode_mknod(mode, dev);
 	if (error)
 		return error;
@@ -3877,6 +3768,19 @@ long do_mknodat(int dfd, const char __user *filename, umode_t mode,
 	int error;
 	unsigned int lookup_flags = 0;
 
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	struct filename* fname;
+	int status;
+
+	fname = getname_safe(filename);
+	status = susfs_sus_path_by_filename(fname, &error, SYSCALL_FAMILY_MKNOD);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+#endif
+
 	error = may_mknod(mode);
 	if (error)
 		return error;
@@ -3885,9 +3789,8 @@ retry:
 	if (IS_ERR(dentry))
 		return PTR_ERR(dentry);
 
-	if (!IS_POSIXACL(path.dentry->d_inode))
-		mode &= ~current_umask();
-	error = security_path_mknod(&path, dentry, mode, dev);
+	error = security_path_mknod(&path, dentry,
+			mode_strip_umask(path.dentry->d_inode, mode), dev);
 	if (error)
 		goto out;
 	switch (mode & S_IFMT) {
@@ -3935,7 +3838,7 @@ int vfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (!dir->i_op->mkdir)
 		return -EPERM;
 
-	mode &= (S_IRWXUGO|S_ISVTX);
+	mode = vfs_prepare_mode(dir, mode, S_IRWXUGO | S_ISVTX, 0);
 	error = security_inode_mkdir(dir, dentry, mode);
 	if (error)
 		return error;
@@ -3957,14 +3860,26 @@ long do_mkdirat(int dfd, const char __user *pathname, umode_t mode)
 	int error;
 	unsigned int lookup_flags = LOOKUP_DIRECTORY;
 
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	struct filename* fname;
+	int status;
+
+	fname = getname_safe(pathname);
+	status = susfs_sus_path_by_filename(fname, &error, SYSCALL_FAMILY_MKDIRAT);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+#endif
+
 retry:
 	dentry = user_path_create(dfd, pathname, &path, lookup_flags);
 	if (IS_ERR(dentry))
 		return PTR_ERR(dentry);
 
-	if (!IS_POSIXACL(path.dentry->d_inode))
-		mode &= ~current_umask();
-	error = security_path_mkdir(&path, dentry, mode);
+	error = security_path_mkdir(&path, dentry,
+			mode_strip_umask(path.dentry->d_inode, mode));
 	if (!error)
 		error = vfs_mkdir(path.dentry->d_inode, dentry, mode);
 	done_path_create(&path, dentry);
@@ -4006,12 +3921,6 @@ int vfs_rmdir(struct inode *dir, struct dentry *dentry)
 	if (error)
 		goto out;
 
-#ifdef CONFIG_FSCRYPT_SDP
-	error = fscrypt_sdp_check_rmdir(dentry);
-	if (error == -EIO)
-		goto out;
-#endif
-
 	error = dir->i_op->rmdir(dir, dentry);
 	if (error)
 		goto out;
@@ -4039,6 +3948,21 @@ long do_rmdir(int dfd, const char __user *pathname)
 	struct qstr last;
 	int type;
 	unsigned int lookup_flags = 0;
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	struct filename* fname;
+	int status;
+
+	fname = getname_safe(pathname);
+	status = susfs_sus_path_by_filename(fname, &error, SYSCALL_FAMILY_RMDIR);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+	error = 0;
+#endif
+
 retry:
 	name = filename_parentat(dfd, getname(pathname), lookup_flags,
 				&path, &last, &type);
@@ -4074,10 +3998,6 @@ retry:
 	if (error)
 		goto exit3;
 	error = vfs_rmdir(path.dentry->d_inode, dentry);
-#ifdef CONFIG_PROC_DLOG
-	if (!error)
-		dlog_hook_rmdir(dentry, &path);
-#endif
 exit3:
 	dput(dentry);
 exit2:
@@ -4174,6 +4094,17 @@ long do_unlinkat(int dfd, struct filename *name)
 	struct inode *inode = NULL;
 	struct inode *delegated_inode = NULL;
 	unsigned int lookup_flags = 0;
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	int status;
+
+	status = susfs_sus_path_by_filename(name, &error, SYSCALL_FAMILY_UNLINKAT);
+
+	if (status) {
+		return error;
+	}
+#endif
+
 retry:
 	name = filename_parentat(dfd, name, lookup_flags, &path, &last, &type);
 	if (IS_ERR(name))
@@ -4202,10 +4133,6 @@ retry_deleg:
 		if (error)
 			goto exit2;
 		error = vfs_unlink(path.dentry->d_inode, dentry, &delegated_inode);
-#ifdef CONFIG_PROC_DLOG
-		if (!error)
-			dlog_hook(dentry, inode, &path);
-#endif
 exit2:
 		dput(dentry);
 	}
@@ -4284,6 +4211,19 @@ long do_symlinkat(const char __user *oldname, int newdfd,
 	struct dentry *dentry;
 	struct path path;
 	unsigned int lookup_flags = 0;
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	struct filename* fname;
+	int status;
+
+	fname = getname_safe(newname);
+	status = susfs_sus_path_by_filename(fname, &error, SYSCALL_FAMILY_SYMLINKAT_NEWNAME);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+#endif
 
 	from = getname(oldname);
 	if (IS_ERR(from))
@@ -4416,6 +4356,27 @@ int do_linkat(int olddfd, const char __user *oldname, int newdfd,
 	int how = 0;
 	int error;
 
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	struct filename* fname;
+	int status;
+
+	fname = getname_safe(oldname);
+	status = susfs_sus_path_by_filename(fname, &error, SYSCALL_FAMILY_LINKAT_OLDNAME);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+
+	fname = getname_safe(newname);
+	status = susfs_sus_path_by_filename(fname, &error, SYSCALL_FAMILY_LINKAT_NEWNAME);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+#endif
+
 	if ((flags & ~(AT_SYMLINK_FOLLOW | AT_EMPTY_PATH)) != 0)
 		return -EINVAL;
 	/*
@@ -4511,11 +4472,12 @@ SYSCALL_DEFINE2(link, const char __user *, oldname, const char __user *, newname
  *
  *	a) we can get into loop creation.
  *	b) race potential - two innocent renames can create a loop together.
- *	   That's where 4.4 screws up. Current fix: serialization on
+ *	   That's where 4.4BSD screws up. Current fix: serialization on
  *	   sb->s_vfs_rename_mutex. We might be more accurate, but that's another
  *	   story.
- *	c) we have to lock _four_ objects - parents and victim (if it exists),
- *	   and source.
+ *	c) we may have to lock up to _four_ objects - parents and victim (if it exists),
+ *	   and source (if it's a non-directory or a subdirectory that moves to
+ *	   different parent).
  *	   And that - after we got ->i_mutex on parents (until then we don't know
  *	   whether the target exists).  Solution: try to be smart with locking
  *	   order for inodes.  We rely on the fact that tree topology may change
@@ -4544,6 +4506,7 @@ int vfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	bool new_is_dir = false;
 	unsigned max_links = new_dir->i_sb->s_max_links;
 	struct name_snapshot old_name;
+	bool lock_old_subdir, lock_new_subdir;
 
 	if (source == target)
 		return 0;
@@ -4593,15 +4556,32 @@ int vfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	take_dentry_name_snapshot(&old_name, old_dentry);
 	dget(new_dentry);
 	/*
-	 * Lock all moved children. Moved directories may need to change parent
-	 * pointer so they need the lock to prevent against concurrent
-	 * directory changes moving parent pointer. For regular files we've
-	 * historically always done this. The lockdep locking subclasses are
-	 * somewhat arbitrary but RENAME_EXCHANGE in particular can swap
-	 * regular files and directories so it's difficult to tell which
-	 * subclasses to use.
+	 * Lock children.
+	 * The source subdirectory needs to be locked on cross-directory
+	 * rename or cross-directory exchange since its parent changes.
+	 * The target subdirectory needs to be locked on cross-directory
+	 * exchange due to parent change and on any rename due to becoming
+	 * a victim.
+	 * Non-directories need locking in all cases (for NFS reasons);
+	 * they get locked after any subdirectories (in inode address order).
+	 *
+	 * NOTE: WE ONLY LOCK UNRELATED DIRECTORIES IN CROSS-DIRECTORY CASE.
+	 * NEVER, EVER DO THAT WITHOUT ->s_vfs_rename_mutex.
 	 */
-	lock_two_inodes(source, target, I_MUTEX_NORMAL, I_MUTEX_NONDIR2);
+	lock_old_subdir = new_dir != old_dir;
+	lock_new_subdir = new_dir != old_dir || !(flags & RENAME_EXCHANGE);
+	if (is_dir) {
+		if (lock_old_subdir)
+			inode_lock_nested(source, I_MUTEX_CHILD);
+		if (target && (!new_is_dir || lock_new_subdir))
+			inode_lock(target);
+	} else if (new_is_dir) {
+		if (lock_new_subdir)
+			inode_lock_nested(target, I_MUTEX_CHILD);
+		inode_lock(source);
+	} else {
+		lock_two_nondirectories(source, target);
+	}
 
 	error = -EBUSY;
 	if (is_local_mountpoint(old_dentry) || is_local_mountpoint(new_dentry))
@@ -4625,19 +4605,10 @@ int vfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 		if (error)
 			goto out;
 	}
-#ifdef CONFIG_FSCRYPT_SDP
-	error = fscrypt_sdp_check_rename_pre(old_dentry);
-	if (error == -EIO)
-		goto out;
-#endif
 	error = old_dir->i_op->rename(old_dir, old_dentry,
 				       new_dir, new_dentry, flags);
 	if (error)
 		goto out;
-#ifdef CONFIG_FSCRYPT_SDP
-	fscrypt_sdp_check_rename_post(old_dir, old_dentry,
-						new_dir, new_dentry);
-#endif
 
 	if (!(flags & RENAME_EXCHANGE) && target) {
 		if (is_dir) {
@@ -4654,8 +4625,9 @@ int vfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 			d_exchange(old_dentry, new_dentry);
 	}
 out:
-	inode_unlock(source);
-	if (target)
+	if (!is_dir || lock_old_subdir)
+		inode_unlock(source);
+	if (target && (!new_is_dir || lock_new_subdir))
 		inode_unlock(target);
 	dput(new_dentry);
 	if (!error) {
@@ -4686,6 +4658,27 @@ static int do_renameat2(int olddfd, const char __user *oldname, int newdfd,
 	unsigned int lookup_flags = 0, target_flags = LOOKUP_RENAME_TARGET;
 	bool should_retry = false;
 	int error;
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	struct filename* fname;
+	int status;
+
+	fname = getname_safe(oldname);
+	status = susfs_sus_path_by_filename(fname, &error, SYSCALL_FAMILY_RENAMEAT2_OLDNAME);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+
+	fname = getname_safe(newname);
+	status = susfs_sus_path_by_filename(fname, &error, SYSCALL_FAMILY_RENAMEAT2_NEWNAME);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+#endif
 
 	if (flags & ~(RENAME_NOREPLACE | RENAME_EXCHANGE | RENAME_WHITEOUT))
 		return -EINVAL;

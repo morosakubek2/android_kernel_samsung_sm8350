@@ -25,20 +25,6 @@
 #include <linux/smp.h>
 #include <linux/delay.h>
 
-char chipname_str[20] = "Samsung";
-
-static int __init get_chipname(char *str)
-{
-	if (!str)
-		return 1;
-	
-	strncpy(chipname_str, str, sizeof(chipname_str) - 1);
-	chipname_str[sizeof(chipname_str) - 1] = '\0';
-
-	return 0;
-}
-__setup("cpuinfo.chipname=", get_chipname);
-
 /*
  * In case the boot CPU is hotpluggable, we record its initial state and
  * current state separately. Certain system registers may contain different
@@ -193,8 +179,6 @@ static int c_show(struct seq_file *m, void *v)
 		seq_printf(m, "CPU revision\t: %d\n\n", MIDR_REVISION(midr));
 	}
 
-	seq_printf(m, "Hardware\t: %s\n", chipname_str);
-
 	return 0;
 }
 
@@ -337,7 +321,7 @@ static void cpuinfo_detect_icache_policy(struct cpuinfo_arm64 *info)
 		set_bit(ICACHEF_ALIASING, &__icache_flags);
 	}
 
-	pr_info("Detected %s I-cache on CPU%d\n", icache_policy_str[l1ip], cpu);
+	pr_debug("Detected %s I-cache on CPU%d\n", icache_policy_str[l1ip], cpu);
 }
 
 static void __cpuinfo_store_cpu(struct cpuinfo_arm64 *info)

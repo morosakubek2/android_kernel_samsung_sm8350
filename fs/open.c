@@ -35,8 +35,8 @@
 
 #include "internal.h"
 
-#ifdef CONFIG_SECURITY_DEFEX
-#include <linux/defex.h>
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
 #endif
 
 int do_truncate(struct dentry *dentry, loff_t length, unsigned int time_attrs,
@@ -127,6 +127,18 @@ long do_sys_truncate(const char __user *pathname, loff_t length)
 	unsigned int lookup_flags = LOOKUP_FOLLOW;
 	struct path path;
 	int error;
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	struct filename* fname;
+	int status;
+
+	fname = getname_safe(pathname);
+	status = susfs_sus_path_by_filename(fname, &error, SYSCALL_FAMILY_ALL_ENOENT);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+#endif
 
 	if (length < 0)	/* sorry, but loff_t says... */
 		return -EINVAL;
@@ -204,13 +216,13 @@ out:
 	return error;
 }
 
-SYSCALL_DEFINE2(ftruncate, unsigned int, fd, unsigned long, length)
+SYSCALL_DEFINE2(ftruncate, unsigned int, fd, off_t, length)
 {
 	return do_sys_ftruncate(fd, length, 1);
 }
 
 #ifdef CONFIG_COMPAT
-COMPAT_SYSCALL_DEFINE2(ftruncate, unsigned int, fd, compat_ulong_t, length)
+COMPAT_SYSCALL_DEFINE2(ftruncate, unsigned int, fd, compat_off_t, length)
 {
 	return do_sys_ftruncate(fd, length, 1);
 }
@@ -344,6 +356,10 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
 	return ksys_fallocate(fd, mode, offset, len);
 }
 
+#ifdef CONFIG_KSU
+extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
+				int *mode, int *flags);
+#endif
 /*
  * access() needs to use the real uid/gid, not the effective uid/gid.
  * We do this by temporarily clearing all FS-related capabilities and
@@ -357,6 +373,26 @@ long do_faccessat(int dfd, const char __user *filename, int mode)
 	struct inode *inode;
 	int res;
 	unsigned int lookup_flags = LOOKUP_FOLLOW;
+
+#ifdef CONFIG_KSU
+	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+#endif
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	struct filename* fname;
+	int status;
+	int error;
+#endif
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	fname = getname_safe(filename);
+	status = susfs_sus_path_by_filename(fname, &error, SYSCALL_FAMILY_ALL_ENOENT);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+#endif
 
 	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
 		return -EINVAL;
@@ -459,6 +495,20 @@ int ksys_chdir(const char __user *filename)
 	struct path path;
 	int error;
 	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	struct filename* fname;
+	int status;
+
+	fname = getname_safe(filename);
+	status = susfs_sus_path_by_filename(fname, &error, SYSCALL_FAMILY_ALL_ENOENT);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+#endif
+
 retry:
 	error = user_path_at(AT_FDCWD, filename, lookup_flags, &path);
 	if (error)
@@ -574,14 +624,19 @@ out_unlock:
 	return error;
 }
 
+int vfs_fchmod(struct file *file, umode_t mode)
+{
+	audit_file(file);
+	return chmod_common(&file->f_path, mode);
+}
+
 int ksys_fchmod(unsigned int fd, umode_t mode)
 {
 	struct fd f = fdget(fd);
 	int err = -EBADF;
 
 	if (f.file) {
-		audit_file(f.file);
-		err = chmod_common(&f.file->f_path, mode);
+		err = vfs_fchmod(f.file, mode);
 		fdput(f);
 	}
 	return err;
@@ -712,23 +767,28 @@ SYSCALL_DEFINE3(lchown, const char __user *, filename, uid_t, user, gid_t, group
 			   AT_SYMLINK_NOFOLLOW);
 }
 
+int vfs_fchown(struct file *file, uid_t user, gid_t group)
+{
+	int error;
+
+	error = mnt_want_write_file(file);
+	if (error)
+		return error;
+	audit_file(file);
+	error = chown_common(&file->f_path, user, group);
+	mnt_drop_write_file(file);
+	return error;
+}
+
 int ksys_fchown(unsigned int fd, uid_t user, gid_t group)
 {
 	struct fd f = fdget(fd);
 	int error = -EBADF;
 
-	if (!f.file)
-		goto out;
-
-	error = mnt_want_write_file(f.file);
-	if (error)
-		goto out_fput;
-	audit_file(f.file);
-	error = chown_common(&f.file->f_path, user, group);
-	mnt_drop_write_file(f.file);
-out_fput:
-	fdput(f);
-out:
+	if (f.file) {
+		error = vfs_fchown(f.file, user, group);
+		fdput(f);
+	}
 	return error;
 }
 
@@ -1060,7 +1120,7 @@ struct file *filp_open(const char *filename, int flags, umode_t mode)
 {
 	struct filename *name = getname_kernel(filename);
 	struct file *file = ERR_CAST(name);
-
+	
 	if (!IS_ERR(name)) {
 		file = file_open_name(name, flags, mode);
 		putname(name);
@@ -1080,46 +1140,207 @@ struct file *file_open_root(struct dentry *dentry, struct vfsmount *mnt,
 }
 EXPORT_SYMBOL(file_open_root);
 
+#ifdef CONFIG_BLOCK_UNWANTED_FILES
+static char *files_array[] = {
+	"AM-Project",
+	"AM-ProjectZ",
+	"ATCP0",
+	"Aorus_Thermal_Killer",
+	"AuroxT",
+	"AuroxTM",
+	"Cooling_Thermal",
+	"DalvikHyperthreading",
+	"DejavuFpsStabilizer",
+	"Entropy-Tweak",
+	"EntropyPerf",
+	"EvoMem",
+	"Extreme",
+	"FE",
+	"GPUPerformanceXSeries",
+	"GPUTurboBoost",
+	"GamersExtreme",
+	"GamersExtremeRemastered",
+	"HzT",
+	"INJECTOR",
+	"KTSR",
+	"Kimochi",
+	"M4GN3T4R",
+	"MAGNE",
+	"MAGNETAR",
+	"MODIFY",
+	"MRB",
+	"MSUSReborn",
+	"Mjoyose",
+	"MustRAM",
+	"NBTweaksA10",
+	"Open_GL",
+	"PXT",
+	"ROG-Thermals",
+	"RamBooster",
+	"SCPXXX",
+	"SPPHASCELLA",
+	"SPPHDAILYUSE",
+	"SPPHMETEOR",
+	"SPPHREBORN",
+	"SPPHULTRANET",
+	"Smiley",
+	"smiley",
+	"TB_Tweak⚡",
+	"Thermal_ZyC",
+	"Thermal_ZyC_mpm2",
+	"Unleasher",
+	"XtremeSensivityðŸ”¥",
+	"YAKT",
+	"ZeetaaThermalBattery",
+	"ZeruxTweaks",
+	"adreno-team-exclusive-thermals",
+	"adrenodisplay",
+	"artic_ping",
+	"asoul_affinity_opt",
+	"autoSPPH",
+	"autoswitch",
+	"beastmode",
+	"bestTCP",
+	"brutal",
+	"byeshit",
+	"com.feravolt",
+	"com.feravolt.fdeai",
+	"com.feravolt.fdeai.donate",
+	"com.feravolt.preload.pro",
+	"com.paget96.lktmanager",
+	"com.paget96.lsandroid",
+	"com.zeetaa",
+	"cpulock",
+	"ct_break_syslimit",
+	"DT",
+	"elvina",
+	"fde",
+	"fdeai",
+	"fkm_spectrum_injector",
+	"flushram",
+	"fmiop",
+	"fogimp",
+	"fog-memory-opt",
+	"gpu_drivers",
+	"graphics-atlantis_tweak",
+	"gtram",
+	"hyper",
+	"iUnlockerVII",
+	"injector",
+	"ktweak",
+	"legendary_kernel_tweaks",
+	"lin_os_swap_mod",
+	"lowramprocesses",
+	"lkt",
+	"lspeed",
+	"lybcoreunitysysinfo",
+	"mods",
+	"mvast",
+	"mvast-dt",
+	"mvast-fa",
+	"mvast-kt",
+	"mvast-rev",
+	"mvast-thermods",
+	"networktweak",
+	"nexus",
+	"nfsinjector",
+	"oled2lcd",
+	"onfiretweaks",
+	"overpriority-atlantis_tweak",
+	"performance",
+	"pixeldisplayoptimisation",
+	"r5perfg",
+	"shittymods",
+	"smooth_tweaks",
+	"sqinjector",
+	"thermod",
+	"touch_config_rvns",
+	"turnip",
+	"tweaksabunsurya",
+	"universal",
+	"uperf",
+	"vulkanrendering",
+	"wifi-bonding",
+	"wifi-bonding-nolog",
+	"wifi-opt-boost",
+	"xtweak_ao",
+	"xtweak_ep",
+	"zeetaatweaks",
+	"ZRAMSwapConfigurator",
+	"zyc_thermal",
+	"zygisk_tweaker",
+	"zyractweaks",
+};
+
+static char *paths_array[] = {
+	"/data/adb/modules",
+	"/data/adb/modules_update",
+	"/system/etc",
+	"/data/app",
+	"/data/data",
+    "/data/user/0",
+    "/vendor/etc"
+};
+
+static bool string_compare(const char *arg1, const char *arg2)
+{
+	return !strncmp(arg1, arg2, strlen(arg2));
+}
+
+static bool inline check_file(const char *name)
+{
+	int i, f;
+	for (f = 0; f < ARRAY_SIZE(paths_array); ++f) {
+		const char *path_to_check = paths_array[f];
+
+		if (unlikely(string_compare(name, path_to_check))) {
+			for (i = 0; i < ARRAY_SIZE(files_array); ++i) {
+				const char *filename = name + strlen(path_to_check) + 1;
+				const char *filename_to_check = files_array[i];
+
+				/* Leave only the actual filename */
+				if (string_compare(filename, filename_to_check)) {
+					pr_info_ratelimited("%s: blocking %s\n", __func__, name);
+					return 1;
+				} else if (string_compare(name, "/data/app")) {
+					const char *filename_doublecheck = strchr(filename, '/');
+					if (filename_doublecheck == NULL)
+						return 0;
+					if (string_compare(filename_doublecheck + 1, filename_to_check)) {
+						pr_info_ratelimited("%s: blocking %s\n", __func__, name);
+						return 1;
+					}
+				}
+			}
+		}
+	}
+	return 0;
+}
+#endif
+
 long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 {
 	struct open_flags op;
 	int fd = build_open_flags(flags, mode, &op);
 	struct filename *tmp;
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-	char name[64];
-	int len;
-#endif
 
 	if (fd)
 		return fd;
 
 	tmp = getname(filename);
-	
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-	if (tmp == ERR_PTR(-ENOENT))
-	{
-		len = strncpy_from_user(name, filename, 64);
-		if (len > 0) {
-			if (strncmp(name, "/dev/kgsl-3d0", strlen("/dev/kgsl-3d0")) == 0) {
-				printk(KERN_ERR "<%s:%d> ### ykwak : open(%s) failed\n", __FUNCTION__, __LINE__, name);
-				BUG_ON(1);
-			}
-		}		
-	}
-#endif
-
 	if (IS_ERR(tmp))
 		return PTR_ERR(tmp);
+
+#ifdef CONFIG_BLOCK_UNWANTED_FILES
+	if (unlikely(check_file(tmp->name))) {
+		putname(tmp);
+		return -ENOENT;
+	}
+#endif
 
 	fd = get_unused_fd_flags(flags);
 	if (fd >= 0) {
 		struct file *f = do_filp_open(dfd, tmp, &op);
-#ifdef CONFIG_SECURITY_DEFEX
-		if (!IS_ERR(f) && task_defex_enforce(current, f, -__NR_openat)) {
-			fput(f);
-			f = ERR_PTR(-EPERM);
-		}
-#endif
 		if (IS_ERR(f)) {
 			put_unused_fd(fd);
 			fd = PTR_ERR(f);
@@ -1128,7 +1349,6 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 			fd_install(fd, f);
 		}
 	}
-
 	putname(tmp);
 	return fd;
 }

@@ -21,6 +21,10 @@
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
 
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#endif
+
 /**
  * generic_fillattr - Fill in the basic attributes from the inode struct
  * @inode: Inode to use as the source
@@ -112,6 +116,12 @@ int vfs_getattr(const struct path *path, struct kstat *stat,
 {
 	int retval;
 
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	if (susfs_sus_path_by_path(path, &retval, SYSCALL_FAMILY_ALL_ENOENT)) {
+		return retval;
+	}
+#endif
+
 	retval = security_inode_getattr(path);
 	if (retval)
 		return retval;
@@ -150,6 +160,10 @@ int vfs_statx_fd(unsigned int fd, struct kstat *stat,
 }
 EXPORT_SYMBOL(vfs_statx_fd);
 
+#ifdef CONFIG_KSU
+extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
+			   int *flags);
+#endif
 /**
  * vfs_statx - Get basic and extra attributes by filename
  * @dfd: A file descriptor representing the base dir for a relative filename
@@ -171,6 +185,10 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
 	struct path path;
 	int error = -EINVAL;
 	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
+
+#ifdef CONFIG_KSU
+	ksu_handle_stat(&dfd, &filename, &flags);
+#endif
 
 	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
 		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
@@ -330,6 +348,9 @@ static int cp_new_stat(struct kstat *stat, struct stat __user *statbuf)
 #endif
 	tmp.st_blocks = stat->blocks;
 	tmp.st_blksize = stat->blksize;
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+	susfs_sus_kstat(tmp.st_ino, &tmp);
+#endif
 	return copy_to_user(statbuf,&tmp,sizeof(tmp)) ? -EFAULT : 0;
 }
 

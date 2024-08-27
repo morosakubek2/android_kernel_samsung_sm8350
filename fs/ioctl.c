@@ -175,10 +175,9 @@ static int fiemap_check_ranges(struct super_block *sb,
 	return 0;
 }
 
-static int ioctl_fiemap(struct file *filp, unsigned long arg)
+static int ioctl_fiemap(struct file *filp, struct fiemap __user *ufiemap)
 {
 	struct fiemap fiemap;
-	struct fiemap __user *ufiemap = (struct fiemap __user *) arg;
 	struct fiemap_extent_info fieinfo = { 0, };
 	struct inode *inode = file_inode(filp);
 	struct super_block *sb = inode->i_sb;
@@ -245,7 +244,8 @@ fdput:
 	return ret;
 }
 
-static long ioctl_file_clone_range(struct file *file, void __user *argp)
+static long ioctl_file_clone_range(struct file *file,
+				   struct file_clone_range __user *argp)
 {
 	struct file_clone_range args;
 
@@ -491,6 +491,35 @@ int ioctl_preallocate(struct file *filp, void __user *argp)
 	return vfs_fallocate(filp, FALLOC_FL_KEEP_SIZE, sr.l_start, sr.l_len);
 }
 
+/* on ia32 l_start is on a 32-bit boundary */
+#if defined CONFIG_COMPAT && defined(CONFIG_X86_64)
+/* just account for different alignment */
+int compat_ioctl_preallocate(struct file *file,
+				struct space_resv_32 __user *argp)
+{
+	struct inode *inode = file_inode(file);
+	struct space_resv_32 sr;
+
+	if (copy_from_user(&sr, argp, sizeof(sr)))
+		return -EFAULT;
+
+	switch (sr.l_whence) {
+	case SEEK_SET:
+		break;
+	case SEEK_CUR:
+		sr.l_start += file->f_pos;
+		break;
+	case SEEK_END:
+		sr.l_start += i_size_read(inode);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return vfs_fallocate(file, FALLOC_FL_KEEP_SIZE, sr.l_start, sr.l_len);
+}
+#endif
+
 static int file_ioctl(struct file *filp, unsigned int cmd,
 		unsigned long arg)
 {
@@ -585,9 +614,9 @@ static int ioctl_fsthaw(struct file *filp)
 	return thaw_super(sb);
 }
 
-static int ioctl_file_dedupe_range(struct file *file, void __user *arg)
+static int ioctl_file_dedupe_range(struct file *file,
+				   struct file_dedupe_range __user *argp)
 {
-	struct file_dedupe_range __user *argp = arg;
 	struct file_dedupe_range *same = NULL;
 	int ret;
 	unsigned long size;
@@ -636,7 +665,7 @@ int do_vfs_ioctl(struct file *filp, unsigned int fd, unsigned int cmd,
 	     unsigned long arg)
 {
 	int error = 0;
-	int __user *argp = (int __user *)arg;
+	void __user *argp = (void __user *)arg;
 	struct inode *inode = file_inode(filp);
 
 	switch (cmd) {
@@ -675,13 +704,13 @@ int do_vfs_ioctl(struct file *filp, unsigned int fd, unsigned int cmd,
 		break;
 
 	case FS_IOC_FIEMAP:
-		return ioctl_fiemap(filp, arg);
+		return ioctl_fiemap(filp, argp);
 
 	case FIGETBSZ:
 		/* anon_bdev filesystems may not have a block size */
 		if (!inode->i_sb->s_blocksize)
 			return -EINVAL;
-		return put_user(inode->i_sb->s_blocksize, argp);
+		return put_user(inode->i_sb->s_blocksize, (int __user *)argp);
 
 	case FICLONE:
 		return ioctl_file_clone(filp, arg, 0, 0, 0);

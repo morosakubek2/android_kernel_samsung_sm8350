@@ -258,8 +258,7 @@ static int v9fs_statfs(struct dentry *dentry, struct kstatfs *buf)
 			buf->f_bavail = rs.bavail;
 			buf->f_files = rs.files;
 			buf->f_ffree = rs.ffree;
-			buf->f_fsid.val[0] = rs.fsid & 0xFFFFFFFFUL;
-			buf->f_fsid.val[1] = (rs.fsid >> 32) & 0xFFFFFFFFUL;
+			buf->f_fsid = u64_to_fsid(rs.fsid);
 			buf->f_namelen = rs.namelen;
 		}
 		if (res != -ENOSYS)
@@ -335,6 +334,7 @@ static const struct super_operations v9fs_super_ops = {
 	.alloc_inode = v9fs_alloc_inode,
 	.free_inode = v9fs_free_inode,
 	.statfs = simple_statfs,
+	.drop_inode = v9fs_drop_inode,
 	.evict_inode = v9fs_evict_inode,
 	.show_options = v9fs_show_options,
 	.umount_begin = v9fs_umount_begin,

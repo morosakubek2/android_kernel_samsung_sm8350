@@ -408,6 +408,7 @@ repeat:
 		tmp = jbd2_alloc(bh_in->b_size, GFP_NOFS);
 		if (!tmp) {
 			brelse(new_bh);
+			free_buffer_head(new_bh);
 			return -ENOMEM;
 		}
 		jbd_lock_bh_state(bh_in);
@@ -2609,8 +2610,8 @@ static void __exit jbd2_remove_jbd_stats_proc_entry(void)
 
 #else
 
-#define jbd2_create_jbd_stats_proc_entry() do {} while (0)
-#define jbd2_remove_jbd_stats_proc_entry() do {} while (0)
+#define jbd2_create_jbd_stats_proc_entry() ((void)0)
+#define jbd2_remove_jbd_stats_proc_entry() ((void)0)
 
 #endif
 

@@ -47,14 +47,6 @@ extern int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
  */
 extern void __init chrdev_init(void);
 
-#ifdef CONFIG_PROC_DLOG
-/*
- * dlog_hook.c
- */
-void dlog_hook(struct dentry *, struct inode *, struct path *);
-void dlog_hook_rmdir(struct dentry *, struct path *);
-#endif
-
 /*
  * fs_context.c
  */
@@ -68,7 +60,6 @@ extern int finish_clean_context(struct fs_context *fc);
  */
 extern int filename_lookup(int dfd, struct filename *name, unsigned flags,
 			   struct path *path, struct path *root);
-extern int user_path_mountpoint_at(int, const char __user *, unsigned int, struct path *);
 extern int vfs_path_lookup(struct dentry *, struct vfsmount *,
 			   const char *, unsigned int, struct path *);
 long do_mknodat(int dfd, const char __user *filename, umode_t mode,
@@ -98,6 +89,11 @@ extern int __mnt_want_write_file(struct file *);
 extern void __mnt_drop_write_file(struct file *);
 
 extern void dissolve_on_fput(struct vfsmount *);
+
+#ifdef CONFIG_KSU_SUSFS
+int path_umount(struct path *path, int flags);
+#endif
+
 /*
  * fs_struct.c
  */
