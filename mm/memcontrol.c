@@ -2214,6 +2214,9 @@ static void drain_stock(struct memcg_stock_pcp *stock)
 {
 	struct mem_cgroup *old = stock->cached;
 
+	if (!old)
+		return;
+
 	if (stock->nr_pages) {
 		page_counter_uncharge(&old->memory, stock->nr_pages);
 		if (do_memsw_account())
@@ -2221,6 +2224,8 @@ static void drain_stock(struct memcg_stock_pcp *stock)
 		css_put_many(&old->css, stock->nr_pages);
 		stock->nr_pages = 0;
 	}
+
+	css_put(&old->css);
 	stock->cached = NULL;
 }
 
@@ -2256,6 +2261,7 @@ static void refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
 	stock = this_cpu_ptr(&memcg_stock);
 	if (stock->cached != memcg) { /* reset if necessary */
 		drain_stock(stock);
+		css_get(&memcg->css);
 		stock->cached = memcg;
 	}
 	stock->nr_pages += nr_pages;
@@ -3408,42 +3414,6 @@ static int mem_cgroup_hierarchy_write(struct cgroup_subsys_state *css,
 	return retval;
 }
 
-#ifdef CONFIG_MEMCG_HEIMDALL
-static ssize_t mem_cgroup_force_shrink_write(struct kernfs_open_file *of,
-					    char *buf, size_t nbytes,
-					    loff_t off)
-{
-	int type;
-	unsigned long size;
-	char *str;
-	int ret = -EINVAL;
-	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
-
-	if (mem_cgroup_is_root(memcg))
-		goto error;
-
-	buf = strstrip(buf);
-	str = strchr(buf, ',');
-	if (str == NULL)
-		goto error;
-
-	*str = '\0';
-	ret = kstrtoul(str+1, 10, &size);
-	if (ret)
-		goto error;
-
-	ret = kstrtoint(buf, 10, &type);
-	if (ret)
-		goto error;
-
-	if (type > 0 && type <= MEMCG_HEIMDALL_SHRINK_FILE)
-		forced_shrink_node_memcg(NODE_DATA(0), memcg, type, size / PAGE_SIZE);
-
-error:
-	return ret ?: nbytes;
-}
-#endif
-
 static unsigned long mem_cgroup_usage(struct mem_cgroup *memcg, bool swap)
 {
 	unsigned long val;
@@ -3454,16 +3424,10 @@ static unsigned long mem_cgroup_usage(struct mem_cgroup *memcg, bool swap)
 		if (swap)
 			val += memcg_page_state(memcg, MEMCG_SWAP);
 	} else {
-#ifdef CONFIG_MEMCG_HEIMDALL
-		val = memcg_page_state(memcg, MEMCG_RSS);
-		if (swap)
-			val += memcg_page_state(memcg, MEMCG_SWAP);
-#else
 		if (!swap)
 			val = page_counter_read(&memcg->memory);
 		else
 			val = page_counter_read(&memcg->memsw);
-#endif
 	}
 	return val;
 }
@@ -4958,12 +4922,6 @@ static struct cftype mem_cgroup_legacy_files[] = {
 	{
 		.name = "numa_stat",
 		.seq_show = memcg_numa_stat_show,
-	},
-#endif
-#ifdef CONFIG_MEMCG_HEIMDALL
-	{
-		.name = "force_shrink",
-		.write = mem_cgroup_force_shrink_write,
 	},
 #endif
 	{
