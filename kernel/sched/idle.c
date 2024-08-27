@@ -8,9 +8,6 @@
  */
 #include "sched.h"
 
-#ifdef CONFIG_QGKI_SHOW_S2IDLE_WAKE_IRQ
-#include <linux/irqchip/arm-gic-v3.h>
-#endif /* CONFIG_QGKI_SHOW_S2IDLE_WAKE_IRQ */
 #include <trace/events/power.h>
 
 /* Linker adds these: start and end of __cpuidle functions */
@@ -64,8 +61,7 @@ static noinline int __cpuidle cpu_idle_poll(void)
 	stop_critical_timings();
 
 	while (!tif_need_resched() &&
-		(cpu_idle_force_poll || tick_check_broadcast_expired() ||
-		is_reserved(smp_processor_id())))
+		(cpu_idle_force_poll || tick_check_broadcast_expired()))
 		cpu_relax();
 	start_critical_timings();
 	trace_cpu_idle_rcuidle(PWR_EVENT_EXIT, smp_processor_id());
@@ -131,11 +127,6 @@ static int call_cpuidle(struct cpuidle_driver *drv, struct cpuidle_device *dev,
  * set, and it returns with polling set.  If it ever stops polling, it
  * must clear the polling bit.
  */
-
-#ifdef CONFIG_QGKI_SHOW_S2IDLE_WAKE_IRQ
-static cpumask_t cpu_state;
-#endif /* CONFIG_QGKI_SHOW_S2IDLE_WAKE_IRQ */
-
 static void cpuidle_idle_call(void)
 {
 	struct cpuidle_device *dev = cpuidle_get_device();
@@ -177,26 +168,9 @@ static void cpuidle_idle_call(void)
 
 	if (idle_should_enter_s2idle() || dev->use_deepest_state) {
 		if (idle_should_enter_s2idle()) {
-
-#ifdef CONFIG_QGKI_SHOW_S2IDLE_WAKE_IRQ
-			bool print_wake_irq;
-
-			cpumask_set_cpu(dev->cpu, &cpu_state);
-#endif /* CONFIG_QGKI_SHOW_S2IDLE_WAKE_IRQ */
-
 			rcu_idle_enter();
 
 			entered_state = cpuidle_enter_s2idle(drv, dev);
-
-#ifdef CONFIG_QGKI_SHOW_S2IDLE_WAKE_IRQ
-			print_wake_irq = cpumask_weight(&cpu_state) ==
-				    cpumask_weight(cpu_online_mask) ?
-				    true : false;
-			cpumask_clear_cpu(dev->cpu, &cpu_state);
-			if (print_wake_irq)
-				gic_s2idle_wake();
-#endif /* CONFIG_QGKI_SHOW_S2IDLE_WAKE_IRQ */
-
 			if (entered_state > 0) {
 				local_irq_enable();
 				goto exit_idle;
@@ -218,7 +192,7 @@ static void cpuidle_idle_call(void)
 		 */
 		next_state = cpuidle_select(drv, dev, &stop_tick);
 
-		if (stop_tick || tick_nohz_tick_stopped())
+		if (stop_tick)
 			tick_nohz_idle_stop_tick();
 		else
 			tick_nohz_idle_retain_tick();
@@ -284,8 +258,7 @@ static void do_idle(void)
 		 * broadcast device expired for us, we don't want to go deep
 		 * idle as we know that the IPI is going to arrive right away.
 		 */
-		if (cpu_idle_force_poll || tick_check_broadcast_expired() ||
-				is_reserved(smp_processor_id())) {
+		if (cpu_idle_force_poll || tick_check_broadcast_expired()) {
 			tick_nohz_idle_restart_tick();
 			cpu_idle_poll();
 		} else {
@@ -312,6 +285,11 @@ static void do_idle(void)
 	 */
 	smp_mb__after_atomic();
 
+	/*
+	 * RCU relies on this call to be done outside of an RCU read-side
+	 * critical section.
+	 */
+	flush_smp_call_function_from_idle();
 	sched_ttwu_pending();
 	schedule_idle();
 

@@ -78,7 +78,7 @@ modpost_link()
 		${KBUILD_VMLINUX_LIBS}				\
 		--end-group"
 
-	if [ -n "${CONFIG_LTO_CLANG}" ]; then
+	if [ -n "${CONFIG_LTO_CLANG}" ] || [ -n "${CONFIG_LTO_GCC}" ]; then
 		# This might take a while, so indicate that we're doing
 		# an LTO link
 		info LTO ${1}
@@ -86,7 +86,7 @@ modpost_link()
 		info LD ${1}
 	fi
 
-	${LD} ${KBUILD_LDFLAGS} -r -o ${1} $(lto_lds) ${objects}
+	${LDFINAL} ${KBUILD_LDFLAGS} -r ${KBUILD_MODPOST_LDFLAGS} -o ${1} $(lto_lds) ${objects}
 }
 
 # If CONFIG_LTO_CLANG is selected, we postpone running recordmcount until
@@ -112,13 +112,15 @@ vmlinux_link()
 	local objects
 	local strip_debug
 
-	info LD ${output}
+	info LDFINAL ${output}
 
 	# skip output file argument
 	shift
 
 	# The kallsyms linking does not need debug symbols included.
-	if [ "$output" != "${output#.tmp_vmlinux.kallsyms}" ] ; then
+	# except for LTO because gcc 10 LTO changes the layout of the data segment
+	# with --strip-debug
+	if [ "$output" != "${output#.tmp_vmlinux.kallsyms}" -a -z "$CONFIG_LTO_GCC" ] ; then
 		strip_debug=-Wl,--strip-debug
 	fi
 
@@ -145,7 +147,7 @@ vmlinux_link()
 				${@}"
 		fi
 
-		${LD} ${KBUILD_LDFLAGS} ${LDFLAGS_vmlinux}	\
+		${LDFINAL} ${KBUILD_LDFLAGS} ${LDFLAGS_vmlinux}	\
 			${strip_debug#-Wl,}			\
 			-o ${output}				\
 			-T ${lds} ${objects}
@@ -199,8 +201,13 @@ gen_btf()
 	${OBJCOPY} --only-section=.BTF --set-section-flags .BTF=alloc,readonly \
 		--strip-all ${1} ${2} 2>/dev/null
 	# Change e_type to ET_REL so that it can be used to link final vmlinux.
-	# Unlike GNU ld, lld does not allow an ET_EXEC input.
-	printf '\1' | dd of=${2} conv=notrunc bs=1 seek=16 status=none
+	# GNU ld 2.35+ and lld do not allow an ET_EXEC input.
+	if [ -n "${CONFIG_CPU_BIG_ENDIAN}" ]; then
+		et_rel='\0\1'
+	else
+		et_rel='\1\0'
+	fi
+	printf "${et_rel}" | dd of=${2} conv=notrunc bs=1 seek=16 status=none
 }
 
 # Create ${2} .o file with all symbols from the ${1} object file
@@ -433,6 +440,7 @@ if [ -n "${CONFIG_QCOM_RTIC}" ]; then
 	fi
 fi
 
+info LDFINAL vmlinux
 vmlinux_link vmlinux "${kallsymso}" ${btf_vmlinux_bin_o}
 
 if [ -n "${CONFIG_BUILDTIME_EXTABLE_SORT}" ]; then
@@ -469,10 +477,4 @@ if [ -n "${CONFIG_QCOM_RTIC}" ]; then
 		# RTIC MP DTS generation command fails and it ensures rtic mp
 		# failure does not cause kernel compilation to fail.
 	fi
-fi
-
-if [ -n "${CONFIG_CRYPTO_FIPS}" ]; then
-	echo '  FIPS : Generating hmac of crypto and updating vmlinux... '
-	PYTHONDONTWRITEBYTECODE=0 "${srctree}/scripts/crypto/fips_crypto_integrity.py" \
-		"${objtree}/vmlinux" "${objtree}/crypto" "${objtree}/arch/arm64/crypto"
 fi

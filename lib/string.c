@@ -29,6 +29,7 @@
 #include <linux/errno.h>
 #include <linux/slab.h>
 
+#include <asm/unaligned.h>
 #include <asm/byteorder.h>
 #include <asm/word-at-a-time.h>
 #include <asm/page.h>
@@ -457,6 +458,23 @@ char *strchrnul(const char *s, int c)
 }
 EXPORT_SYMBOL(strchrnul);
 #endif
+
+/**
+ * strnchrnul - Find and return a character in a length limited string,
+ * or end of string
+ * @s: The string to be searched
+ * @count: The number of characters to be searched
+ * @c: The character to search for
+ *
+ * Returns pointer to the first occurrence of 'c' in s. If c is not found,
+ * then return a pointer to the last character of the string.
+ */
+char *strnchrnul(const char *s, size_t count, int c)
+{
+	while (count-- && *s && *s != (char)c)
+		s++;
+	return (char *)s;
+}
 
 #ifndef __HAVE_ARCH_STRRCHR
 /**
@@ -905,6 +923,21 @@ __visible int memcmp(const void *cs, const void *ct, size_t count)
 	const unsigned char *su1, *su2;
 	int res = 0;
 
+#ifdef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
+	if (count >= sizeof(unsigned long)) {
+		const unsigned long *u1 = cs;
+		const unsigned long *u2 = ct;
+		do {
+			if (get_unaligned(u1) != get_unaligned(u2))
+				break;
+			u1++;
+			u2++;
+			count -= sizeof(unsigned long);
+		} while (count >= sizeof(unsigned long));
+		cs = u1;
+		ct = u2;
+	}
+#endif
 	for (su1 = cs, su2 = ct; 0 < count; ++su1, ++su2, count--)
 		if ((res = *su1 - *su2) != 0)
 			break;

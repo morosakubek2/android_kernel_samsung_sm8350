@@ -10,9 +10,7 @@
 #include <linux/hrtimer.h>
 #include <linux/sched.h>
 #include <linux/math64.h>
-#if IS_ENABLED(CONFIG_SEC_INPUT_BOOSTER)
-#include <linux/pm_qos.h>
-#endif
+
 #include "qc_vas.h"
 #include <trace/events/sched.h>
 
@@ -132,12 +130,7 @@ void sched_update_hyst_times(void)
 		coloc_busy_pct = sysctl_sched_coloc_busy_hyst_cpu_busy_pct[cpu];
 		per_cpu(hyst_time, cpu) = (BIT(cpu)
 			     & sysctl_sched_busy_hyst_enable_cpus) ?
-#if IS_ENABLED(CONFIG_SEC_INPUT_BOOSTER)
-			     max(sysctl_sched_busy_hyst,
-				    (unsigned int)(pm_qos_request(PM_QOS_BIAS_HYST) * NSEC_PER_MSEC)) : 0;
-#else
-				 sysctl_sched_busy_hyst : 0;
-#endif
+			     sysctl_sched_busy_hyst : 0;
 		per_cpu(coloc_hyst_time, cpu) = ((BIT(cpu)
 			     & sysctl_sched_coloc_busy_hyst_enable_cpus)
 			     && rtgb_active) ?
@@ -155,10 +148,6 @@ static inline void update_busy_hyst_end_time(int cpu, bool dequeue,
 	bool nr_run_trigger = false;
 	bool load_trigger = false, coloc_load_trigger = false;
 	u64 agg_hyst_time;
-	bool is_sched_boost = false;
-
-	if (sysctl_sched_boost > 0)
-		is_sched_boost = true;
 
 	if (!per_cpu(hyst_time, cpu) && !per_cpu(coloc_hyst_time, cpu))
 		return;
@@ -173,7 +162,7 @@ static inline void update_busy_hyst_end_time(int cpu, bool dequeue,
 	if (dequeue && cpu_util(cpu) > per_cpu(coloc_hyst_busy, cpu))
 		coloc_load_trigger = true;
 
-	agg_hyst_time = max((nr_run_trigger || load_trigger || is_sched_boost) ?
+	agg_hyst_time = max((nr_run_trigger || load_trigger) ?
 				per_cpu(hyst_time, cpu) : 0,
 				(nr_run_trigger || coloc_load_trigger) ?
 				per_cpu(coloc_hyst_time, cpu) : 0);
@@ -243,17 +232,20 @@ unsigned int sched_get_cpu_util(int cpu)
 {
 	struct rq *rq = cpu_rq(cpu);
 	u64 util;
-	unsigned long capacity, flags;
+	unsigned long capacity;
 	unsigned int busy;
 
-	raw_spin_lock_irqsave(&rq->lock, flags);
+	u32 prev_run_sum, group_run_sum;
+
+	util = walt_get_prev_group_run_sum(rq);
+	group_run_sum = (u32) (util >> 32);
+	prev_run_sum = (u32) util;
+
+	util = prev_run_sum + group_run_sum;
+	util = div64_u64(util, sched_ravg_window >>
+			SCHED_CAPACITY_SHIFT);
 
 	capacity = capacity_orig_of(cpu);
-
-	util = rq->wrq.prev_runnable_sum + rq->wrq.grp_time.prev_runnable_sum;
-	util = div64_u64(util, sched_ravg_window >> SCHED_CAPACITY_SHIFT);
-	raw_spin_unlock_irqrestore(&rq->lock, flags);
-
 	util = (util >= capacity) ? capacity : util;
 	busy = div64_ul((util * 100), capacity);
 	return busy;

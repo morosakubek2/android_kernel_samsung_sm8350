@@ -14,14 +14,10 @@
 #include <linux/interrupt.h>
 #include <linux/kernel_stat.h>
 #include <linux/irqdomain.h>
-#include <linux/wakeup_reason.h>
 
 #include <trace/events/irq.h>
 
 #include "internals.h"
-#if IS_ENABLED(CONFIG_SEC_DEBUG_SCHED_LOG)
-#include <linux/sec_debug.h>
-#endif
 
 static irqreturn_t bad_chained_irq(int irq, void *dev_id)
 {
@@ -42,7 +38,7 @@ struct irqaction chained_action = {
  *	@irq:	irq number
  *	@chip:	pointer to irq chip description structure
  */
-int irq_set_chip(unsigned int irq, struct irq_chip *chip)
+int irq_set_chip(unsigned int irq, const struct irq_chip *chip)
 {
 	unsigned long flags;
 	struct irq_desc *desc = irq_get_desc_lock(irq, &flags, 0);
@@ -50,10 +46,7 @@ int irq_set_chip(unsigned int irq, struct irq_chip *chip)
 	if (!desc)
 		return -EINVAL;
 
-	if (!chip)
-		chip = &no_irq_chip;
-
-	desc->irq_data.chip = chip;
+	desc->irq_data.chip = (struct irq_chip *)(chip ?: &no_irq_chip);
 	irq_put_desc_unlock(desc, flags);
 	/*
 	 * For !CONFIG_SPARSE_IRQ make the irq show up in
@@ -508,36 +501,24 @@ static bool irq_check_poll(struct irq_desc *desc)
 
 static bool irq_may_run(struct irq_desc *desc)
 {
-	unsigned int mask = IRQD_IRQ_INPROGRESS | IRQD_WAKEUP_ARMED;
-
-	/*
-	 * If the interrupt is not in progress and is not an armed
-	 * wakeup interrupt, proceed.
-	 */
-	if (!irqd_has_set(&desc->irq_data, mask)) {
-#ifdef CONFIG_PM_SLEEP
-		if (unlikely(desc->no_suspend_depth &&
-			     irqd_is_wakeup_set(&desc->irq_data))) {
-			unsigned int irq = irq_desc_get_irq(desc);
-			const char *name = "(unnamed)";
-
-			if (desc->action && desc->action->name)
-				name = desc->action->name;
-
-			log_abnormal_wakeup_reason("misconfigured IRQ %u %s",
-						   irq, name);
-		}
-#endif
+	/* Proceed if the IRQ isn't in progress and isn't a wakeup interrupt */
+	if (!irqd_has_set(&desc->irq_data, IRQD_IRQ_INPROGRESS |
+			  IRQD_WAKEUP_ARMED | IRQD_WAKEUP_STATE))
 		return true;
-	}
 
 	/*
 	 * If the interrupt is an armed wakeup source, mark it pending
 	 * and suspended, disable it and notify the pm core about the
-	 * event.
+	 * event. If it's a wakeup interrupt and has yet to be armed
+	 * but suspend is in progress, do a wakeup to cancel suspend.
+	 * The IRQ will be allowed to run via the check right below.
 	 */
 	if (irq_pm_check_wakeup(desc))
 		return false;
+
+	/* Run the IRQ as usual if it's a wakeup source and isn't yet armed */
+	if (irqd_is_wakeup_set(&desc->irq_data))
+		return true;
 
 	/*
 	 * Handle a potential concurrent poll on a different core.
@@ -958,25 +939,9 @@ void handle_percpu_devid_irq(struct irq_desc *desc)
 		chip->irq_ack(&desc->irq_data);
 
 	if (likely(action)) {
-#if defined(CONFIG_SEC_DEBUG_SCHED_LOG)
-#if defined(CONFIG_SEC_DEBUG_SCHED_LOG_IRQ_V2)
-		sec_debug_irq_sched_log(irq, desc, action, IRQ_ENTRY_V2);
-#else
-		sec_debug_irq_sched_log(irq, action->handler,
-				(char *)action->name, IRQ_ENTRY);
-#endif
-#endif
 		trace_irq_handler_entry(irq, action);
 		res = action->handler(irq, raw_cpu_ptr(action->percpu_dev_id));
 		trace_irq_handler_exit(irq, action, res);
-#if defined(CONFIG_SEC_DEBUG_SCHED_LOG)
-#if defined(CONFIG_SEC_DEBUG_SCHED_LOG_IRQ_V2)
-		sec_debug_irq_sched_log(irq, desc, action, IRQ_EXIT_V2);
-#else
-		sec_debug_irq_sched_log(irq, action->handler,
-				(char *)action->name, IRQ_EXIT);
-#endif
-#endif
 	} else {
 		unsigned int cpu = smp_processor_id();
 		bool enabled = cpumask_test_cpu(cpu, desc->percpu_enabled);
@@ -1120,7 +1085,7 @@ irq_set_chained_handler_and_data(unsigned int irq, irq_flow_handler_t handle,
 EXPORT_SYMBOL_GPL(irq_set_chained_handler_and_data);
 
 void
-irq_set_chip_and_handler_name(unsigned int irq, struct irq_chip *chip,
+irq_set_chip_and_handler_name(unsigned int irq, const struct irq_chip *chip,
 			      irq_flow_handler_t handle, const char *name)
 {
 	irq_set_chip(irq, chip);
@@ -1607,6 +1572,17 @@ int irq_chip_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
 	return 0;
 }
 
+static struct device *irq_get_parent_device(struct irq_data *data)
+{
+	if (data->chip->parent_device)
+		return data->chip->parent_device;
+
+	if (data->domain)
+		return data->domain->dev;
+
+	return NULL;
+}
+
 /**
  * irq_chip_pm_get - Enable power for an IRQ chip
  * @data:	Pointer to interrupt specific data
@@ -1616,12 +1592,13 @@ int irq_chip_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
  */
 int irq_chip_pm_get(struct irq_data *data)
 {
+	struct device *dev = irq_get_parent_device(data);
 	int retval;
 
-	if (IS_ENABLED(CONFIG_PM) && data->chip->parent_device) {
-		retval = pm_runtime_get_sync(data->chip->parent_device);
+	if (IS_ENABLED(CONFIG_PM) && dev) {
+		retval = pm_runtime_get_sync(dev);
 		if (retval < 0) {
-			pm_runtime_put_noidle(data->chip->parent_device);
+			pm_runtime_put_noidle(dev);
 			return retval;
 		}
 	}
@@ -1639,10 +1616,11 @@ int irq_chip_pm_get(struct irq_data *data)
  */
 int irq_chip_pm_put(struct irq_data *data)
 {
+	struct device *dev = irq_get_parent_device(data);
 	int retval = 0;
 
-	if (IS_ENABLED(CONFIG_PM) && data->chip->parent_device)
-		retval = pm_runtime_put(data->chip->parent_device);
+	if (IS_ENABLED(CONFIG_PM) && dev)
+		retval = pm_runtime_put(dev);
 
 	return (retval < 0) ? retval : 0;
 }

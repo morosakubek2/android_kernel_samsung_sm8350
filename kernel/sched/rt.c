@@ -16,7 +16,7 @@
 #include <trace/hooks/sched.h>
 
 int sched_rr_timeslice = RR_TIMESLICE;
-int sysctl_sched_rr_timeslice = (MSEC_PER_SEC / HZ) * RR_TIMESLICE;
+int sysctl_sched_rr_timeslice = (MSEC_PER_SEC * RR_TIMESLICE) / HZ;
 /* More than 4 hours if BW_SHIFT equals 20. */
 static const u64 max_rt_runtime = MAX_BW;
 
@@ -476,10 +476,6 @@ static inline bool rt_task_fits_capacity(struct task_struct *p, int cpu)
 	unsigned int min_cap;
 	unsigned int max_cap;
 	unsigned int cpu_cap;
-
-	/* Only heterogeneous systems can benefit from this check */
-	if (!static_branch_unlikely(&sched_asym_cpucapacity))
-		return true;
 
 	min_cap = uclamp_eff_value(p, UCLAMP_MIN);
 	max_cap = uclamp_eff_value(p, UCLAMP_MAX);
@@ -1522,20 +1518,16 @@ static int find_lowest_rq(struct task_struct *task);
 
 /*
  * Return whether the task on the given cpu is currently non-preemptible
- * while handling a potentially long softint, or if the task is likely
- * to block preemptions soon because it is a ksoftirq thread that is
- * handling slow softints.
+ * while handling a softirq or is likely to block preemptions soon because
+ * it is a ksoftirq thread.
  */
 bool
 task_may_not_preempt(struct task_struct *task, int cpu)
 {
-	__u32 softirqs = per_cpu(active_softirqs, cpu) |
-			 __IRQ_STAT(cpu, __softirq_pending);
 	struct task_struct *cpu_ksoftirqd = per_cpu(ksoftirqd, cpu);
 
-	return ((softirqs & LONG_SOFTIRQ_MASK) &&
-		(task == cpu_ksoftirqd ||
-		 task_thread_info(task)->preempt_count & SOFTIRQ_MASK));
+	return (task_thread_info(task)->preempt_count & SOFTIRQ_MASK) ||
+	       task == cpu_ksoftirqd;
 }
 
 static int
@@ -1891,9 +1883,6 @@ static int rt_energy_aware_wake_cpu(struct task_struct *task)
 	struct sched_domain *sd;
 	struct sched_group *sg;
 	struct cpumask *lowest_mask = this_cpu_cpumask_var_ptr(local_cpu_mask);
-#ifdef CONFIG_SEC_PERF_MANAGER
-	struct cpumask tmp_mask;
-#endif
 	int cpu, best_cpu = -1;
 	unsigned long best_capacity = ULONG_MAX;
 	unsigned long util, best_cpu_util = ULONG_MAX;
@@ -1904,9 +1893,6 @@ static int rt_energy_aware_wake_cpu(struct task_struct *task)
 	int cpu_idle_idx = -1;
 	bool boost_on_big = rt_boost_on_big();
 	bool best_cpu_lt = true;
-#ifdef CONFIG_SEC_PERF_MANAGER
-	boost_on_big = boost_on_big || task->drawing_mig_boost;
-#endif
 
 	rcu_read_lock();
 
@@ -1927,14 +1913,6 @@ retry:
 		if (boost_on_big) {
 			if (is_min_capacity_cpu(fcpu))
 				continue;
-#ifdef CONFIG_SEC_PERF_MANAGER
-			else {
-				if (task->drawing_mig_boost) {
-					cpumask_or(&tmp_mask, &tmp_mask, sched_group_span(sg));
-					lowest_mask = &tmp_mask;
-				}
-			}
-#endif
 		} else {
 			if (capacity_orig > best_capacity)
 				continue;
@@ -1951,20 +1929,11 @@ retry:
 			if (sched_cpu_high_irqload(cpu))
 				continue;
 
-			util = cpu_util(cpu);
-
-#ifdef CONFIG_SEC_PERF_MANAGER
-			if (task->drawing_mig_boost) {
-				if (__cpu_overutilized(cpu, util + tutil))
-					continue;
-			} else {
-				if (__cpu_overutilized(cpu, tutil))
-					continue;
-			}
-#else
 			if (__cpu_overutilized(cpu, tutil))
 				continue;
-#endif
+
+			util = cpu_util(cpu);
+
 			lt = (walt_low_latency_task(cpu_rq(cpu)->curr) ||
 				walt_nr_rtg_high_prio(cpu));
 
@@ -2057,16 +2026,9 @@ static int find_lowest_rq(struct task_struct *task)
 	 * If we're on asym system ensure we consider the different capacities
 	 * of the CPUs when searching for the lowest_mask.
 	 */
-	if (static_branch_unlikely(&sched_asym_cpucapacity)) {
-
-		ret = cpupri_find_fitness(&task_rq(task)->rd->cpupri,
-					  task, lowest_mask,
-					  rt_task_fits_capacity);
-	} else {
-
-		ret = cpupri_find(&task_rq(task)->rd->cpupri,
-				  task, lowest_mask);
-	}
+	ret = cpupri_find_fitness(&task_rq(task)->rd->cpupri,
+				  task, lowest_mask,
+				  rt_task_fits_capacity);
 
 	if (!ret)
 		return -1; /* No targets found */
@@ -2085,13 +2047,9 @@ static int find_lowest_rq(struct task_struct *task)
 	 * We prioritize the last CPU that the task executed on since
 	 * it is most likely cache-hot in that location.
 	 */
-#ifdef CONFIG_SEC_PERF_MANAGER
-	if (task->drawing_mig_boost || cpumask_test_cpu(cpu, lowest_mask))
-		return cpu;
-#else
 	if (cpumask_test_cpu(cpu, lowest_mask))
 		return cpu;
-#endif
+
 	/*
 	 * Otherwise, we consult the sched_domains span maps to figure
 	 * out which CPU is logically closest to our hot cache data.
@@ -2145,7 +2103,6 @@ static struct rq *find_lock_lowest_rq(struct task_struct *task, struct rq *rq)
 	struct rq *lowest_rq = NULL;
 	int tries;
 	int cpu;
-	bool cpu_allow_check = true;
 
 	for (tries = 0; tries < RT_MAX_TRIES; tries++) {
 		cpu = find_lowest_rq(task);
@@ -2173,13 +2130,8 @@ static struct rq *find_lock_lowest_rq(struct task_struct *task, struct rq *rq)
 			 * migrated already or had its affinity changed.
 			 * Also make sure that it wasn't scheduled on its rq.
 			 */
-			cpu_allow_check = cpumask_test_cpu(lowest_rq->cpu, task->cpus_ptr);
-#ifdef CONFIG_SEC_PERF_MANAGER
-			if (!task->drawing_mig_boost)
-				cpu_allow_check = cpu_active(cpu);
-#endif
 			if (unlikely(task_rq(task) != rq ||
-				     !cpu_allow_check ||
+				     !cpumask_test_cpu(lowest_rq->cpu, task->cpus_ptr) ||
 				     task_running(rq, task) ||
 				     !rt_task(task) ||
 				     !task_on_rq_queued(task))) {
@@ -2384,8 +2336,11 @@ static int rto_next_cpu(struct root_domain *rd)
 
 		rd->rto_cpu = cpu;
 
-		if (cpu < nr_cpu_ids)
+		if (cpu < nr_cpu_ids) {
+			if (!has_pushable_tasks(cpu_rq(cpu)))
+				continue;
 			return cpu;
+		}
 
 		rd->rto_cpu = -1;
 
@@ -3088,9 +3043,6 @@ static int sched_rt_global_constraints(void)
 
 static int sched_rt_global_validate(void)
 {
-	if (sysctl_sched_rt_period <= 0)
-		return -EINVAL;
-
 	if ((sysctl_sched_rt_runtime != RUNTIME_INF) &&
 		((sysctl_sched_rt_runtime > sysctl_sched_rt_period) ||
 		 ((u64)sysctl_sched_rt_runtime *
@@ -3122,7 +3074,7 @@ int sched_rt_handler(struct ctl_table *table, int write,
 	old_period = sysctl_sched_rt_period;
 	old_runtime = sysctl_sched_rt_runtime;
 
-	ret = proc_dointvec(table, write, buffer, lenp, ppos);
+	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 
 	if (!ret && write) {
 		ret = sched_rt_global_validate();
@@ -3167,6 +3119,9 @@ int sched_rr_handler(struct ctl_table *table, int write,
 		sched_rr_timeslice =
 			sysctl_sched_rr_timeslice <= 0 ? RR_TIMESLICE :
 			msecs_to_jiffies(sysctl_sched_rr_timeslice);
+
+		if (sysctl_sched_rr_timeslice <= 0)
+			sysctl_sched_rr_timeslice = jiffies_to_msecs(RR_TIMESLICE);
 	}
 	mutex_unlock(&mutex);
 

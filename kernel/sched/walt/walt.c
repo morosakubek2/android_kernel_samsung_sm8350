@@ -29,7 +29,9 @@ const char *migrate_type_names[] = {"GROUP_TO_RQ", "RQ_TO_GROUP",
 #define WINDOW_STATS_MAX		1
 #define WINDOW_STATS_MAX_RECENT_AVG	2
 #define WINDOW_STATS_AVG		3
-#define WINDOW_STATS_INVALID_POLICY	4
+#define WINDOW_STATS_WMA               4
+#define WINDOW_STATS_EWMA	5
+#define WINDOW_STATS_INVALID_POLICY    6
 
 #define MAX_NR_CLUSTERS			3
 
@@ -46,6 +48,9 @@ static bool use_cycle_counter;
 static DEFINE_MUTEX(cluster_lock);
 static atomic64_t walt_irq_work_lastq_ws;
 static u64 walt_load_reported_window;
+static DEFINE_PER_CPU(atomic64_t, prev_group_runnable_sum) = ATOMIC64_INIT(0);
+static DEFINE_PER_CPU(atomic64_t, cycles) = ATOMIC64_INIT(0);
+static DEFINE_PER_CPU(atomic64_t, last_cc_update) = ATOMIC64_INIT(0);
 
 static struct irq_work walt_cpufreq_irq_work;
 static struct irq_work walt_migration_irq_work;
@@ -80,6 +85,22 @@ static int __init sched_init_ops(void)
 	return 0;
 }
 late_initcall(sched_init_ops);
+
+static inline void
+walt_commit_prev_group_run_sum(struct rq *rq)
+{
+	u64 val;
+
+	val = rq->wrq.grp_time.prev_runnable_sum;
+	val = (val << 32) | rq->wrq.prev_runnable_sum;
+	atomic64_set(&per_cpu(prev_group_runnable_sum, cpu_of(rq)), val);
+}
+
+u64
+walt_get_prev_group_run_sum(struct rq *rq)
+{
+	return (u64) atomic64_read(&per_cpu(prev_group_runnable_sum, cpu_of(rq)));
+}
 
 static void acquire_rq_locks_irqsave(const cpumask_t *cpus,
 				     unsigned long *flags)
@@ -116,18 +137,18 @@ unsigned int sysctl_walt_cpu_high_irqload = 95;
 static unsigned int walt_cpu_high_irqload;
 
 unsigned int sysctl_sched_walt_rotate_big_tasks;
-unsigned int walt_rotation_enabled;
+unsigned int walt_rotation_enabled = 1;
 
 __read_mostly unsigned int sysctl_sched_asym_cap_sibling_freq_match_pct = 100;
 __read_mostly unsigned int sysctl_sched_asym_cap_sibling_freq_match_en;
 static cpumask_t asym_freq_match_cpus = CPU_MASK_NONE;
 
-__read_mostly unsigned int sched_ravg_hist_size = 5;
+static __read_mostly unsigned int sched_ravg_hist_size = 5;
 
 static __read_mostly unsigned int sched_io_is_busy = 1;
 
 __read_mostly unsigned int sysctl_sched_window_stats_policy =
-	WINDOW_STATS_MAX_RECENT_AVG;
+	WINDOW_STATS_EWMA;
 
 unsigned int sysctl_sched_ravg_window_nr_ticks = (HZ / NR_WINDOWS_PER_SEC);
 
@@ -135,10 +156,10 @@ unsigned int sysctl_sched_dynamic_ravg_window_enable = (HZ == 250);
 
 /* Window size (in ns) */
 __read_mostly unsigned int sched_ravg_window = DEFAULT_SCHED_RAVG_WINDOW;
-__read_mostly unsigned int new_sched_ravg_window = DEFAULT_SCHED_RAVG_WINDOW;
+static __read_mostly unsigned int new_sched_ravg_window = DEFAULT_SCHED_RAVG_WINDOW;
 
 static DEFINE_SPINLOCK(sched_ravg_window_lock);
-u64 sched_ravg_window_change_time;
+static u64 sched_ravg_window_change_time;
 
 /*
  * A after-boot constant divisor for cpu_util_freq_walt() to apply the load
@@ -148,8 +169,8 @@ static __read_mostly unsigned int walt_cpu_util_freq_divisor;
 
 /* Initial task load. Newly created tasks are assigned this load. */
 unsigned int __read_mostly sched_init_task_load_windows;
-unsigned int __read_mostly sched_init_task_load_windows_scaled;
-unsigned int __read_mostly sysctl_sched_init_task_load_pct = 15;
+static unsigned int __read_mostly sched_init_task_load_windows_scaled;
+static unsigned int __read_mostly sysctl_sched_init_task_load_pct = 15;
 
 unsigned int max_possible_capacity = 1024; /* max(rq->max_possible_capacity) */
 unsigned int
@@ -173,7 +194,7 @@ static const unsigned int top_tasks_bitmap_size =
  * This governs what load needs to be used when reporting CPU busy time
  * to the cpufreq governor.
  */
-__read_mostly unsigned int sysctl_sched_freq_reporting_policy;
+static __read_mostly unsigned int sysctl_sched_freq_reporting_policy;
 
 static int __init set_sched_ravg_window(char *str)
 {
@@ -203,7 +224,7 @@ static int __init set_sched_predl(char *str)
 }
 early_param("sched_predl", set_sched_predl);
 
-__read_mostly unsigned int walt_scale_demand_divisor;
+static __read_mostly unsigned int walt_scale_demand_divisor;
 #define scale_demand(d) ((d)/walt_scale_demand_divisor)
 
 #define SCHED_PRINT(arg)        printk_deferred("%s=%llu", #arg, arg)
@@ -395,21 +416,19 @@ update_window_start(struct rq *rq, u64 wallclock, int event)
 	return old_window_start;
 }
 
-/*
- * Assumes rq_lock is held and wallclock was recorded in the same critical
- * section as this function's invocation.
- */
+#define THRESH_CC_UPDATE (2 * NSEC_PER_USEC)
 static inline u64 read_cycle_counter(int cpu, u64 wallclock)
 {
-	struct rq *rq = cpu_rq(cpu);
+	u64 delta;
 
-	if (rq->wrq.last_cc_update != wallclock) {
-		rq->wrq.cycles =
-			cpu_cycle_counter_cb.get_cpu_cycle_counter(cpu);
-		rq->wrq.last_cc_update = wallclock;
+	delta = wallclock - atomic64_read(&per_cpu(last_cc_update, cpu));
+	if (delta > THRESH_CC_UPDATE) {
+		atomic64_set(&per_cpu(cycles, cpu),
+			cpu_cycle_counter_cb.get_cpu_cycle_counter(cpu));
+		atomic64_set(&per_cpu(last_cc_update, cpu), wallclock);
 	}
 
-	return rq->wrq.cycles;
+	return atomic64_read(&per_cpu(cycles, cpu));
 }
 
 static void update_task_cpu_cycles(struct task_struct *p, int cpu,
@@ -723,6 +742,8 @@ static inline void account_load_subtractions(struct rq *rq)
 		ls[i].new_subs = 0;
 	}
 
+	walt_commit_prev_group_run_sum(rq);
+
 	SCHED_BUG_ON((s64)rq->wrq.prev_runnable_sum < 0);
 	SCHED_BUG_ON((s64)rq->wrq.curr_runnable_sum < 0);
 	SCHED_BUG_ON((s64)rq->wrq.nt_prev_runnable_sum < 0);
@@ -781,7 +802,7 @@ static inline struct walt_sched_cluster *cpu_cluster(int cpu)
 	return cpu_rq(cpu)->wrq.cluster;
 }
 
-void update_cluster_load_subtractions(struct task_struct *p,
+static void update_cluster_load_subtractions(struct task_struct *p,
 					int cpu, u64 ws, bool new_task)
 {
 	struct walt_sched_cluster *cluster = cpu_cluster(cpu);
@@ -1008,7 +1029,7 @@ void fixup_busy_time(struct task_struct *p, int new_cpu)
 
 	new_task = is_new_task(p);
 	/* Protected by rq_lock */
-	grp = p->wts.grp;
+	grp = rcu_dereference(p->wts.grp);
 
 	/*
 	 * For frequency aggregation, we continue to do migration fixups
@@ -1057,6 +1078,9 @@ void fixup_busy_time(struct task_struct *p, int new_cpu)
 	}
 
 	migrate_top_tasks(p, src_rq, dest_rq);
+
+	walt_commit_prev_group_run_sum(src_rq);
+	walt_commit_prev_group_run_sum(dest_rq);
 
 	if (!same_freq_domain(new_cpu, task_cpu(p))) {
 		src_rq->wrq.notif_pending = true;
@@ -1123,7 +1147,7 @@ unsigned int sysctl_sched_many_wakeup_threshold = WALT_MANY_WAKEUP_DEFAULT;
  * decayed. The rate of increase and decay could be different based
  * on current count in the bucket.
  */
-static inline void bucket_increase(u8 *buckets, int idx)
+static inline void bucket_increase(u8 *buckets, u16 *bucket_bitmask, int idx)
 {
 	int i, step;
 
@@ -1131,8 +1155,10 @@ static inline void bucket_increase(u8 *buckets, int idx)
 		if (idx != i) {
 			if (buckets[i] > DEC_STEP)
 				buckets[i] -= DEC_STEP;
-			else
+			else {
 				buckets[i] = 0;
+				*bucket_bitmask &= ~BIT_MASK(i);
+			}
 		} else {
 			step = buckets[i] >= CONSISTENT_THRES ?
 						INC_STEP_BIG : INC_STEP;
@@ -1140,6 +1166,7 @@ static inline void bucket_increase(u8 *buckets, int idx)
 				buckets[i] = U8_MAX;
 			else
 				buckets[i] += step;
+			*bucket_bitmask |= BIT_MASK(i);
 		}
 	}
 }
@@ -1175,33 +1202,26 @@ static inline int busy_to_bucket(u32 normalized_rt)
  *
  * A new predicted busy time is returned for task @p based on @runtime
  * passed in. The function searches through buckets that represent busy
- * time equal to or bigger than @runtime and attempts to find the bucket to
- * to use for prediction. Once found, it searches through historical busy
- * time and returns the latest that falls into the bucket. If no such busy
- * time exists, it returns the medium of that bucket.
+ * time equal to or bigger than @runtime and attempts to find the bucket
+ * to use for prediction. Once found, it returns the midpoint of that bucket.
  */
 static u32 get_pred_busy(struct task_struct *p,
-				int start, u32 runtime)
+				int start, u32 runtime, u16 bucket_bitmask)
 {
-	int i;
-	u8 *buckets = p->wts.busy_buckets;
-	u32 *hist = p->wts.sum_history;
 	u32 dmin, dmax;
 	u64 cur_freq_runtime = 0;
-	int first = NUM_BUSY_BUCKETS, final;
+	int first = NUM_BUSY_BUCKETS, final = NUM_BUSY_BUCKETS;
 	u32 ret = runtime;
+	u16 next_mask = bucket_bitmask >> start;
 
 	/* skip prediction for new tasks due to lack of history */
 	if (unlikely(is_new_task(p)))
 		goto out;
 
 	/* find minimal bucket index to pick */
-	for (i = start; i < NUM_BUSY_BUCKETS; i++) {
-		if (buckets[i]) {
-			first = i;
-			break;
-		}
-	}
+	if (next_mask)
+		first = ffs(next_mask) - 1 + start;
+
 	/* if no higher buckets are filled, predict runtime */
 	if (first >= NUM_BUSY_BUCKETS)
 		goto out;
@@ -1220,23 +1240,10 @@ static u32 get_pred_busy(struct task_struct *p,
 	dmax = mult_frac(final + 1, max_task_load(), NUM_BUSY_BUCKETS);
 
 	/*
-	 * search through runtime history and return first runtime that falls
-	 * into the range of predicted bucket.
-	 */
-	for (i = 0; i < sched_ravg_hist_size; i++) {
-		if (hist[i] >= dmin && hist[i] < dmax) {
-			ret = hist[i];
-			break;
-		}
-	}
-	/* no historical runtime within bucket found, use average of the bin */
-	if (ret < dmin)
-		ret = (dmin + dmax) / 2;
-	/*
 	 * when updating in middle of a window, runtime could be higher
 	 * than all recorded history. Always predict at least runtime.
 	 */
-	ret = max(runtime, ret);
+	ret = max(runtime, (dmin + dmax) / 2);
 out:
 	trace_sched_update_pred_demand(p, runtime,
 		mult_frac((unsigned int)cur_freq_runtime, 100,
@@ -1250,7 +1257,7 @@ static inline u32 calc_pred_demand(struct task_struct *p)
 		return p->wts.pred_demand;
 
 	return get_pred_busy(p, busy_to_bucket(p->wts.curr_window),
-			     p->wts.curr_window);
+			     p->wts.curr_window, p->wts.bucket_bitmask);
 }
 
 /*
@@ -1258,7 +1265,7 @@ static inline u32 calc_pred_demand(struct task_struct *p)
  * if the task current window busy time exceeds the predicted
  * demand, update it here to reflect the task needs.
  */
-void update_task_pred_demand(struct rq *rq, struct task_struct *p, int event)
+static void update_task_pred_demand(struct rq *rq, struct task_struct *p, int event)
 {
 	u32 new, old;
 	u16 new_scaled;
@@ -1301,7 +1308,7 @@ void update_task_pred_demand(struct rq *rq, struct task_struct *p, int event)
 	p->wts.pred_demand_scaled = new_scaled;
 }
 
-void clear_top_tasks_bitmap(unsigned long *bitmap)
+static void clear_top_tasks_bitmap(unsigned long *bitmap)
 {
 	memset(bitmap, 0, top_tasks_bitmap_size);
 	__set_bit(NUM_LOAD_INDICES, bitmap);
@@ -1459,11 +1466,6 @@ static void rollover_task_window(struct task_struct *p, bool full_window)
 		p->wts.active_time += task_rq(p)->wrq.prev_window_size;
 }
 
-void sched_set_io_is_busy(int val)
-{
-	sched_io_is_busy = val;
-}
-
 static inline int cpu_is_waiting_on_io(struct rq *rq)
 {
 	if (!sched_io_is_busy)
@@ -1607,7 +1609,7 @@ static void update_cpu_busy_time(struct task_struct *p, struct rq *rq,
 	if (!account_busy_for_cpu_time(rq, p, irqtime, event))
 		goto done;
 
-	grp = p->wts.grp;
+	grp = rcu_dereference(p->wts.grp);
 	if (grp) {
 		struct group_cpu_time *cpu_time = &rq->wrq.grp_time;
 
@@ -1774,7 +1776,7 @@ static void update_cpu_busy_time(struct task_struct *p, struct rq *rq,
 		 */
 		if (mark_start > window_start) {
 			*curr_runnable_sum = scale_exec_time(irqtime, rq);
-			return;
+			goto done;
 		}
 
 		/*
@@ -1795,6 +1797,8 @@ static void update_cpu_busy_time(struct task_struct *p, struct rq *rq,
 	}
 
 done:
+	walt_commit_prev_group_run_sum(rq);
+
 	if (!is_idle_task(p))
 		update_top_tasks(p, rq, old_curr_window,
 					new_window, full_window);
@@ -1811,8 +1815,8 @@ static inline u32 predict_and_update_buckets(
 		return 0;
 
 	bidx = busy_to_bucket(runtime);
-	pred_demand = get_pred_busy(p, bidx, runtime);
-	bucket_increase(p->wts.busy_buckets, bidx);
+	pred_demand = get_pred_busy(p, bidx, runtime, p->wts.bucket_bitmask);
+	bucket_increase(p->wts.busy_buckets, &p->wts.bucket_bitmask, bidx);
 
 	return pred_demand;
 }
@@ -1871,7 +1875,7 @@ static void update_history(struct rq *rq, struct task_struct *p,
 	u32 *hist = &p->wts.sum_history[0];
 	int ridx, widx;
 	u32 max = 0, avg, demand, pred_demand;
-	u64 sum = 0;
+	u64 sum = 0, wma = 0, ewma = 0;
 	u16 demand_scaled, pred_demand_scaled;
 
 	/* Ignore windows where task had no activity */
@@ -1883,6 +1887,9 @@ static void update_history(struct rq *rq, struct task_struct *p,
 	ridx = widx - samples;
 	for (; ridx >= 0; --widx, --ridx) {
 		hist[widx] = hist[ridx];
+
+		wma += hist[widx] * (sched_ravg_hist_size - widx);
+		ewma += hist[widx] << (sched_ravg_hist_size - widx - 1);
 		sum += hist[widx];
 		if (hist[widx] > max)
 			max = hist[widx];
@@ -1890,6 +1897,9 @@ static void update_history(struct rq *rq, struct task_struct *p,
 
 	for (widx = 0; widx < samples && widx < sched_ravg_hist_size; widx++) {
 		hist[widx] = runtime;
+
+		wma += hist[widx] * (sched_ravg_hist_size - widx);
+		ewma += hist[widx] << (sched_ravg_hist_size - widx - 1);
 		sum += hist[widx];
 		if (hist[widx] > max)
 			max = hist[widx];
@@ -1901,6 +1911,31 @@ static void update_history(struct rq *rq, struct task_struct *p,
 		demand = runtime;
 	} else if (sysctl_sched_window_stats_policy == WINDOW_STATS_MAX) {
 		demand = max;
+	} else if (sysctl_sched_window_stats_policy == WINDOW_STATS_WMA) {
+		/*
+		 * WMA stands for weighted moving average. It helps to
+		 * smooth load curve and react faster while ramping down
+		 * comparing with basic average policy. When ramping up
+		 * it prevents from a spurious big "recent" sample that
+		 * may lead to overshooting if it is bigger then AVG of
+		 * history demand.
+		 *
+		 * See below example (4 HS):
+		 *
+		 * WMA = (P0 * 4 + P1 * 3 + P2 * 2 + P3 * 1) / (4 + 3 + 2 + 1)
+		 *
+		 * This is done for power saving. Means when load disappears
+		 * or becomes low, this algorithm caches a real bottom load
+		 * faster (because of weights) then taking AVG values.
+		 */
+		wma = div64_u64(wma, (sched_ravg_hist_size * (sched_ravg_hist_size + 1)) / 2);
+		demand = (u32) wma;
+	} else if (sysctl_sched_window_stats_policy == WINDOW_STATS_EWMA) {
+		/*
+		 * EWMA is an exponential version of the WMA algorithm.
+		 */
+		ewma = div64_u64(ewma, (1 << sched_ravg_hist_size) - 1);
+		demand = (u32) ewma;
 	} else {
 		avg = div64_u64(sum, sched_ravg_hist_size);
 		if (sysctl_sched_window_stats_policy == WINDOW_STATS_AVG)
@@ -2129,6 +2164,26 @@ update_task_rq_cpu_cycles(struct task_struct *p, struct rq *rq, int event,
 			time_delta = wallclock - p->wts.mark_start;
 		SCHED_BUG_ON((s64)time_delta < 0);
 
+		/*
+		 * It can happen when a time between two updates
+		 * (for example TASK_UPDATE) is very short. The reason
+		 * is a read_cycle_counter function now can return
+		 * a previous/same CC value if a last read was within
+		 * a THRESH_CC_UPDATE threshold.
+		 *
+		 * In that particular scenario use current CPU OPP
+		 * to scale such task's delta contributions which
+		 * are smaller than THRESH_CC_UPDATE interval.
+		 *
+		 * The aim of using a current frequency is because:
+		 *   - an estimated one can be zero;
+		 *   - we do not want to lose samples due to that.
+		 */
+		if (unlikely(!cycles_delta)) {
+			cycles_delta = sched_cpu_legacy_freq(cpu);
+			time_delta = 1;
+		}
+
 		rq->wrq.task_exec_scale = DIV64_U64_ROUNDUP(cycles_delta *
 				arch_scale_cpu_capacity(cpu),
 				time_delta *
@@ -2226,6 +2281,7 @@ void init_new_task_load(struct task_struct *p)
 	for (i = 0; i < NUM_BUSY_BUCKETS; ++i)
 		p->wts.busy_buckets[i] = 0;
 
+	p->wts.bucket_bitmask = 0;
 	p->wts.cpu_cycles = 0;
 
 	p->wts.curr_window_cpu = kcalloc(nr_cpu_ids, sizeof(u32),
@@ -2278,13 +2334,9 @@ void walt_task_dead(struct task_struct *p)
 void reset_task_stats(struct task_struct *p)
 {
 	int i = 0;
-	u32 *curr_window_ptr;
-	u32 *prev_window_ptr;
 
-	curr_window_ptr =  p->wts.curr_window_cpu;
-	prev_window_ptr = p->wts.prev_window_cpu;
-	memset(curr_window_ptr, 0, sizeof(u32) * nr_cpu_ids);
-	memset(prev_window_ptr, 0, sizeof(u32) * nr_cpu_ids);
+	memset(p->wts.curr_window_cpu, 0, sizeof(u32) * nr_cpu_ids);
+	memset(p->wts.prev_window_cpu, 0, sizeof(u32) * nr_cpu_ids);
 
 	p->wts.mark_start = 0;
 	p->wts.sum = 0;
@@ -2300,9 +2352,7 @@ void reset_task_stats(struct task_struct *p)
 	p->wts.demand_scaled = 0;
 	p->wts.pred_demand_scaled = 0;
 	p->wts.active_time = 0;
-
-	p->wts.curr_window_cpu = curr_window_ptr;
-	p->wts.prev_window_cpu = prev_window_ptr;
+	p->wts.bucket_bitmask = 0;
 }
 
 void mark_task_starting(struct task_struct *p)
@@ -2325,7 +2375,7 @@ void mark_task_starting(struct task_struct *p)
  * Task groups whose aggregate demand on a cpu is more than
  * sched_group_upmigrate need to be up-migrated if possible.
  */
-unsigned int __read_mostly sched_group_upmigrate = 20000000;
+static unsigned int __read_mostly sched_group_upmigrate = 20000000;
 unsigned int __read_mostly sysctl_sched_group_upmigrate_pct = 100;
 
 /*
@@ -2333,7 +2383,7 @@ unsigned int __read_mostly sysctl_sched_group_upmigrate_pct = 100;
  * demand to less than sched_group_downmigrate before they are "down"
  * migrated.
  */
-unsigned int __read_mostly sched_group_downmigrate = 19000000;
+static unsigned int __read_mostly sched_group_downmigrate = 19000000;
 unsigned int __read_mostly sysctl_sched_group_downmigrate_pct = 95;
 
 static inline void walt_update_group_thresholds(void)
@@ -2619,6 +2669,8 @@ void walt_update_cluster_topology(void)
 
 		if (policy) {
 			cluster->max_possible_freq = policy->cpuinfo.max_freq;
+			/*CPU run at its fmax at boot time*/
+			cluster->cur_freq = policy->cpuinfo.max_freq;
 
 			for_each_cpu(i, &cluster->cpus)
 				cpumask_copy(&cpu_rq(i)->wrq.freq_domain_cpumask,
@@ -2750,7 +2802,7 @@ static void transfer_busy_time(struct rq *rq,
  */
 unsigned int __read_mostly sysctl_sched_coloc_downmigrate_ns;
 
-struct walt_related_thread_group
+static struct walt_related_thread_group
 			*related_thread_groups[MAX_NUM_CGROUP_COLOC_ID];
 static LIST_HEAD(active_related_thread_groups);
 static DEFINE_RWLOCK(related_thread_group_lock);
@@ -2947,15 +2999,16 @@ err:
 
 static void remove_task_from_group(struct task_struct *p)
 {
-	struct walt_related_thread_group *grp = p->wts.grp;
+	struct walt_related_thread_group *grp;
 	struct rq *rq;
 	int empty_group = 1;
 	struct rq_flags rf;
 
+	grp = rcu_dereference(p->wts.grp);
 	raw_spin_lock(&grp->lock);
 
 	rq = __task_rq_lock(p, &rf);
-	transfer_busy_time(rq, p->wts.grp, p, REM_TASK);
+	transfer_busy_time(rq, grp, p, REM_TASK);
 	list_del_init(&p->wts.grp_list);
 	rcu_assign_pointer(p->wts.grp, NULL);
 	__task_rq_unlock(rq, &rf);
@@ -3379,6 +3432,7 @@ static void transfer_busy_time(struct rq *rq,
 	p->wts.curr_window_cpu[cpu] = p->wts.curr_window;
 	p->wts.prev_window_cpu[cpu] = p->wts.prev_window;
 
+	walt_commit_prev_group_run_sum(rq);
 	trace_sched_migration_update_sum(p, migrate_type, rq);
 }
 
@@ -3446,7 +3500,7 @@ static void walt_update_irqload(struct rq *rq)
  * Runs in hard-irq context. This should ideally run just after the latest
  * window roll-over.
  */
-void walt_irq_work(struct irq_work *irq_work)
+static void walt_irq_work(struct irq_work *irq_work)
 {
 	struct walt_sched_cluster *cluster;
 	struct rq *rq;
@@ -3788,8 +3842,6 @@ void walt_sched_init_rq(struct rq *rq)
 	rq->wrq.curr_table = 0;
 	rq->wrq.prev_top = 0;
 	rq->wrq.curr_top = 0;
-	rq->wrq.last_cc_update = 0;
-	rq->wrq.cycles = 0;
 	for (j = 0; j < NUM_TRACKED_WINDOWS; j++) {
 		memset(&rq->wrq.load_subs[j], 0,
 				sizeof(struct load_subtractions));
@@ -3860,10 +3912,3 @@ unlock:
 	mutex_unlock(&mutex);
 	return ret;
 }
-
-#if IS_ENABLED(CONFIG_SEC_DEBUG)
-int get_num_clusters(void)
-{
-	return num_sched_clusters;
-}
-#endif

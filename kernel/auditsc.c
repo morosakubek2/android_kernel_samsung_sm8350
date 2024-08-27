@@ -90,11 +90,8 @@
 /* max length to print of cmdline/proctitle value during audit */
 #define MAX_PROCTITLE_AUDIT_LEN 128
 
-// [ SEC_SELINUX_PORTING_COMMON
-// Enable AUDIT_PROCTITLE, AUDIT_PATH
 /* number of audit rules */
-int audit_n_rules = 1;
-// ] SEC_SELINUX_PORTING_COMMON
+int audit_n_rules;
 
 /* determines whether we collect data for signals sent */
 int audit_signals;
@@ -1602,9 +1599,7 @@ static void audit_log_exit(void)
 				  context->target_sessionid,
 				  context->target_sid, context->target_comm))
 			call_panic = 1;
-// [ SEC_SELINUX_PORTING_COMMON
-// Disable AUDIT_CWD
-/*
+
 	if (context->pwd.dentry && context->pwd.mnt) {
 		ab = audit_log_start(context, GFP_KERNEL, AUDIT_CWD);
 		if (ab) {
@@ -1612,8 +1607,6 @@ static void audit_log_exit(void)
 			audit_log_end(ab);
 		}
 	}
-*/
-// ] SEC_SELINUX_PORTING_COMMON
 
 	i = 0;
 	list_for_each_entry(n, &context->names_list, list) {

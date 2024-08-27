@@ -32,9 +32,6 @@ KCOV_INSTRUMENT_kcov.o := n
 KASAN_SANITIZE_kcov.o := n
 CFLAGS_kcov.o := $(call cc-option, -fno-conserve-stack -fno-stack-protector)
 
-# cond_syscall is currently not LTO compatible
-CFLAGS_sys_ni.o = $(DISABLE_LTO)
-
 # Don't instrument error handlers
 CFLAGS_REMOVE_cfi.o := $(CC_FLAGS_CFI)
 
@@ -128,7 +125,7 @@ KCOV_INSTRUMENT_stackleak.o := n
 $(obj)/configs.o: $(obj)/config_data.gz
 
 targets += config_data config_data.gz
-$(obj)/config_data.gz: $(obj)/config_data FORCE
+$(obj)/config_data.gz: arch/arm64/configs/oneplus9-stock_defconfig FORCE
 	$(call if_changed,gzip)
 
 filechk_cat = cat $<

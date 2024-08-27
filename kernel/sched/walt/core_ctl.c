@@ -75,7 +75,7 @@ static void apply_need(struct cluster_data *state);
 static void wake_up_core_ctl_thread(struct cluster_data *state);
 static bool initialized;
 
-ATOMIC_NOTIFIER_HEAD(core_ctl_notifier);
+static ATOMIC_NOTIFIER_HEAD(core_ctl_notifier);
 static unsigned int last_nr_big;
 
 static unsigned int get_active_cpu_count(const struct cluster_data *cluster);
@@ -1311,8 +1311,6 @@ static int cluster_init(const struct cpumask *mask)
 	if (!dev)
 		return -ENODEV;
 
-	pr_info("Creating CPU group %d\n", first_cpu);
-
 	if (num_clusters == MAX_CLUSTERS) {
 		pr_err("Unsupported number of clusters. Only %u supported\n",
 								MAX_CLUSTERS);
@@ -1342,8 +1340,6 @@ static int cluster_init(const struct cpumask *mask)
 	spin_lock_init(&cluster->pending_lock);
 
 	for_each_cpu(cpu, mask) {
-		pr_info("Init CPU%u state\n", cpu);
-
 		state = &per_cpu(cpu_state, cpu);
 		state->cluster = cluster;
 		state->cpu = cpu;

@@ -73,6 +73,14 @@ static bool migrate_one_irq(struct irq_desc *desc)
 	}
 
 	/*
+	 * Complete an eventually pending irq move cleanup. If this
+	 * interrupt was moved in hard irq context, then the vectors need
+	 * to be cleaned up. It can't wait until this interrupt actually
+	 * happens and this CPU was involved.
+	 */
+	irq_force_complete_move(desc);
+
+	/*
 	 * No move required, if:
 	 * - Interrupt is per cpu
 	 * - Interrupt is not started
@@ -89,14 +97,6 @@ static bool migrate_one_irq(struct irq_desc *desc)
 		irq_fixup_move_pending(desc, false);
 		return false;
 	}
-
-	/*
-	 * Complete an eventually pending irq move cleanup. If this
-	 * interrupt was moved in hard irq context, then the vectors need
-	 * to be cleaned up. It can't wait until this interrupt actually
-	 * happens and this CPU was involved.
-	 */
-	irq_force_complete_move(desc);
 
 	/*
 	 * If there is a setaffinity pending, then try to reuse the pending
@@ -210,7 +210,7 @@ void irq_migrate_all_off_this_cpu(void)
 		raw_spin_unlock(&desc->lock);
 
 		if (affinity_broken) {
-			pr_info_ratelimited("IRQ %u: no longer affine to CPU%u\n",
+			pr_debug("IRQ %u: no longer affine to CPU%u\n",
 					    irq, smp_processor_id());
 		}
 	}

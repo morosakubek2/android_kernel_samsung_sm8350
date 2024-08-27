@@ -18,10 +18,6 @@
 
 #include "internals.h"
 
-#if IS_ENABLED(CONFIG_SEC_DEBUG_SCHED_LOG)
-#include <linux/sec_debug.h>
-#endif
-
 #ifdef CONFIG_GENERIC_IRQ_MULTI_HANDLER
 void (*handle_arch_irq)(struct pt_regs *) __ro_after_init;
 #endif
@@ -148,23 +144,17 @@ irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags
 
 	for_each_action_of_desc(desc, action) {
 		irqreturn_t res;
-#if defined(CONFIG_SEC_DEBUG_SCHED_LOG)
-#if defined(CONFIG_SEC_DEBUG_SCHED_LOG_IRQ_V2)
-		sec_debug_irq_sched_log(irq, desc, action, IRQ_ENTRY_V2);
-#else
-		sec_debug_irq_sched_log(irq, action->handler, (char *)action->name, IRQ_ENTRY);
-#endif
-#endif
+
+		/*
+		 * If this IRQ would be threaded under force_irqthreads, mark it so.
+		 */
+		if (irq_settings_can_thread(desc) &&
+		    !(action->flags & (IRQF_NO_THREAD | IRQF_PERCPU | IRQF_ONESHOT)))
+			trace_hardirq_threaded();
+
 		trace_irq_handler_entry(irq, action);
 		res = action->handler(irq, action->dev_id);
 		trace_irq_handler_exit(irq, action, res);
-#if defined(CONFIG_SEC_DEBUG_SCHED_LOG)
-#if defined(CONFIG_SEC_DEBUG_SCHED_LOG_IRQ_V2)
-		sec_debug_irq_sched_log(irq, desc, action, IRQ_EXIT_V2);
-#else
-		sec_debug_irq_sched_log(irq, action->handler, (char *)action->name, IRQ_EXIT);
-#endif
-#endif
 
 		if (WARN_ONCE(!irqs_disabled(),"irq %u handler %pS enabled interrupts\n",
 			      irq, action->handler))
